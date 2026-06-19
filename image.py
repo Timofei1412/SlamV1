@@ -29,8 +29,10 @@ class LineSensor():
             s1 = avgs[i]
             s2 = avgs[2]
             errors.append( 100 * (s2 - s1) / 255)
+        
             
-        raise NotImplementedError
+
+        # raise NotImplementedError
 
 def find_mirror_center_and_radius(image, manual_center=None, manual_radius=None):
     """
