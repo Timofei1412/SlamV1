@@ -1,38 +1,7 @@
-# import cv2
-
 import cv2
 import numpy as np
 import sys
 from tools import drawImageOnScreen
-
-class LineSensor():
-    def __init__(self, image, debug:bool = False,):
-        self.image = image
-
-        self.sensors = []
-        self.sizeSensor = 5
-
-    def getLineImage(self):
-        gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
-
-        avgs = [] # avg color in area of a sensor
-        for i in range(len(self.sensors)):
-            avgs.append(0)
-            for x in range(- self.sizeSensor, self.sizeSensor):
-                for y in range(- self.sizeSensor, self.sizeSensor):
-                    avgs[-1] += gray[i[0] + x][i[1] + y]
-            avgs //= (self.sizeSensor)** 2
-
-        errors = []
-
-        for i in range(0,len(avgs), 2):
-            s1 = avgs[i]
-            s2 = avgs[2]
-            errors.append( 100 * (s2 - s1) / 255)
-        
-            
-
-        # raise NotImplementedError
 
 def find_mirror_center_and_radius(image, manual_center=None, manual_radius=None):
     """
@@ -108,7 +77,7 @@ def unwrap_cone_image(image_path, output_path,
         dsize, 
         center, 
         max_radius, 
-        flags=cv2.WARP_POLAR_LINEAR + cv2.WARP_FILL_OUTLIERS
+        flags=cv2.WARP_POLAR_NEAR + cv2.WARP_FILL_OUTLIERS
     )
     
     unwrapped_img = cv2.rotate(unwrapped_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -123,34 +92,34 @@ def unwrap_cone_image(image_path, output_path,
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-if __name__ == "__main__":
-    INPUT_IMAGE = "Images/img1.jpg"      # Путь к исходному изображению с камеры
-    OUTPUT_IMAGE = "Output/unwrapped_output.jpg" # Путь для сохранения панорамы
+# if __name__ == "__main__":
+#     INPUT_IMAGE = "Images/img1.jpg"      # Путь к исходному изображению с камеры
+#     OUTPUT_IMAGE = "Output/unwrapped_output.jpg" # Путь для сохранения панорамы
     
-    MANUAL_CENTER = (1071, 829)  # Пример: (640, 480)
-    MANUAL_RADIUS = 778  # Пример: 400
+#     MANUAL_CENTER = (1071, 829)  # Пример: (640, 480)
+#     MANUAL_RADIUS = 778  # Пример: 400
     
-    PANORAMA_WIDTH = 300 
+#     PANORAMA_WIDTH = 300 
     
-    ROTATION = 0 
-    # ----------------
-    for i in range(-10, 10):
-        unwrap_cone_image(
-            image_path=INPUT_IMAGE,
-            output_path=OUTPUT_IMAGE,
-            manual_center=(1071 + i, 829),
-            manual_radius=MANUAL_RADIUS,
-            output_width=PANORAMA_WIDTH,
-        )
+#     ROTATION = 0 
+#     # ----------------
+#     for i in range(-10, 10):
+#         unwrap_cone_image(
+#             image_path=INPUT_IMAGE,
+#             output_path=OUTPUT_IMAGE,
+#             manual_center=(1071 + i, 829),
+#             manual_radius=MANUAL_RADIUS,
+#             output_width=PANORAMA_WIDTH,
+#         )
 
 
 
-    #  unwrap_cone_image(
-    #         image_path=INPUT_IMAGE,
-    #         output_path=OUTPUT_IMAGE,
-    #         manual_center=MANUAL_CENTER,
-    #         manual_radius=MANUAL_RADIUS,
-    #         output_width=PANORAMA_WIDTH,
-    #     )
+#     #  unwrap_cone_image(
+#     #         image_path=INPUT_IMAGE,
+#     #         output_path=OUTPUT_IMAGE,
+#     #         manual_center=MANUAL_CENTER,
+#     #         manual_radius=MANUAL_RADIUS,
+#     #         output_width=PANORAMA_WIDTH,
+#     #     )
 
 
