@@ -9,9 +9,11 @@ def main():
     logging.basicConfig(
         filename=log_file,
         filemode="w",
+        # datefmt='%H:%M:%S.%f',
         format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
         level=logging.DEBUG,
         encoding='utf-8',
+        # backupCount=3,  
         )
 
     logging.info('Приложение запущено')

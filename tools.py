@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import logging
 
 
 def drawImageOnScreen(window_name:str, image:np.ndarray):

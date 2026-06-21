@@ -92,34 +92,34 @@ def unwrap_cone_image(image_path, output_path,
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-# if __name__ == "__main__":
-#     INPUT_IMAGE = "Images/img1.jpg"      # Путь к исходному изображению с камеры
-#     OUTPUT_IMAGE = "Output/unwrapped_output.jpg" # Путь для сохранения панорамы
+if __name__ == "__main__":
+    INPUT_IMAGE = "Images/img1.jpg"      # Путь к исходному изображению с камеры
+    OUTPUT_IMAGE = "Output/unwrapped_output.jpg" # Путь для сохранения панорамы
     
-#     MANUAL_CENTER = (1071, 829)  # Пример: (640, 480)
-#     MANUAL_RADIUS = 778  # Пример: 400
+    MANUAL_CENTER = (1071, 829)  # Пример: (640, 480)
+    MANUAL_RADIUS = 778  # Пример: 400
     
-#     PANORAMA_WIDTH = 300 
+    PANORAMA_WIDTH = 300 
     
-#     ROTATION = 0 
-#     # ----------------
-#     for i in range(-10, 10):
-#         unwrap_cone_image(
-#             image_path=INPUT_IMAGE,
-#             output_path=OUTPUT_IMAGE,
-#             manual_center=(1071 + i, 829),
-#             manual_radius=MANUAL_RADIUS,
-#             output_width=PANORAMA_WIDTH,
-#         )
+    ROTATION = 0 
+    # ----------------
+    for i in range(-10, 10):
+        unwrap_cone_image(
+            image_path=INPUT_IMAGE,
+            output_path=OUTPUT_IMAGE,
+            manual_center=(1071 + i, 829),
+            manual_radius=MANUAL_RADIUS,
+            output_width=PANORAMA_WIDTH,
+        )
 
 
 
-#     #  unwrap_cone_image(
-#     #         image_path=INPUT_IMAGE,
-#     #         output_path=OUTPUT_IMAGE,
-#     #         manual_center=MANUAL_CENTER,
-#     #         manual_radius=MANUAL_RADIUS,
-#     #         output_width=PANORAMA_WIDTH,
-#     #     )
+    #  unwrap_cone_image(
+    #         image_path=INPUT_IMAGE,
+    #         output_path=OUTPUT_IMAGE,
+    #         manual_center=MANUAL_CENTER,
+    #         manual_radius=MANUAL_RADIUS,
+    #         output_width=PANORAMA_WIDTH,
+    #     )
 
 
