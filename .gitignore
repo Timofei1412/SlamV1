@@ -280,4 +280,5 @@ $RECYCLE.BIN/
 *.lnk
 /output
 
+Output/
 # End of https://www.toptal.com/developers/gitignore/api/python,windows,c++,linux,macos

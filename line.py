@@ -6,7 +6,6 @@ from tools import drawImageOnScreen, constrain
 
 class Sensor:
     """Один сенсор — считывает среднее значение n×n пикселей."""
-
     def __init__(self, x: int, y: int, size: int = 5):
         self.x = x
         self.y = y
@@ -110,8 +109,7 @@ class LineSensorModule:
             return vals[0] - vals[1]        
         #black bottom
         return vals[1] - vals[0]
-    
-    
+
     def draw(self, img: np.ndarray, color: tuple = (0, 0, 255)):
         cv2.circle(img, self.center, 5, color, 3)
         for i in self.sensors:
@@ -138,6 +136,7 @@ class LineController:
             "DOWN": [0, 1, 1, 0],
             "LEN": [1, 0, 0, 1]
         }
+
         self.errorDetection = {
             "UP": [1, 0, 0, 0],
             "RIGHT": [0, 1, 0, 0],
@@ -146,7 +145,6 @@ class LineController:
         }
         
         self.directions = ["UP", "RIGHT", "DOWN", "LEFT"]
-
 
     def set_center(self, img: np.ndarray):
         """Позволяет выбрать новый центр мышкой на изображении. Выводит новые параметры в консоль."""

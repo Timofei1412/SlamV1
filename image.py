@@ -77,7 +77,7 @@ def unwrap_cone_image(image_path, output_path,
         dsize, 
         center, 
         max_radius, 
-        flags=cv2.WARP_POLAR_NEAR + cv2.WARP_FILL_OUTLIERS
+        flags=cv2.WARP_POLAR_LINEAR + cv2.WARP_FILL_OUTLIERS
     )
     
     unwrapped_img = cv2.rotate(unwrapped_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
@@ -86,6 +86,7 @@ def unwrap_cone_image(image_path, output_path,
     print(f"Развернутое изображение сохранено в {output_path}")
 
     # Отображение для проверки
+    cv2.circle(img, center, 5, (0, 0, 255), 5)
     drawImageOnScreen("Original with Center", img)
     
     cv2.imshow("Unwrapped Panorama", unwrapped_img)
@@ -93,24 +94,24 @@ def unwrap_cone_image(image_path, output_path,
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    INPUT_IMAGE = "Images/img1.jpg"      # Путь к исходному изображению с камеры
+    INPUT_IMAGE = "Images/a.jpeg"      # Путь к исходному изображению с камеры
     OUTPUT_IMAGE = "Output/unwrapped_output.jpg" # Путь для сохранения панорамы
     
-    MANUAL_CENTER = (1071, 829)  # Пример: (640, 480)
+    MANUAL_CENTER = (1200, 900)  # Пример: (640, 480)
     MANUAL_RADIUS = 778  # Пример: 400
     
     PANORAMA_WIDTH = 300 
     
     ROTATION = 0 
     # ----------------
-    for i in range(-10, 10):
-        unwrap_cone_image(
-            image_path=INPUT_IMAGE,
-            output_path=OUTPUT_IMAGE,
-            manual_center=(1071 + i, 829),
-            manual_radius=MANUAL_RADIUS,
-            output_width=PANORAMA_WIDTH,
-        )
+    # for i in range(-10, 10):
+    unwrap_cone_image(
+        image_path=INPUT_IMAGE,
+        output_path=OUTPUT_IMAGE,
+        manual_center=MANUAL_CENTER,
+        manual_radius=MANUAL_RADIUS,
+        output_width=PANORAMA_WIDTH,
+    )
 
 
 
