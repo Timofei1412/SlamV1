@@ -96,8 +96,8 @@ class ConicalLocalization:
         
         # Optical flow parameters
         self.feature_params = dict(
-            maxCorners=100,
-            qualityLevel=0.4,
+            maxCorners=150,
+            qualityLevel=0.3,
             minDistance=15,
             blockSize=12
         )
@@ -389,9 +389,9 @@ def main():
         cx=308,
         cy=234,
         outer_r=230,
-        lens_deg=-81.86,
-        cone_power=2.245,
-        rotation_deg=-2.0,
+        lens_deg=-83.0,
+        cone_power=2.1,
+        rotation_deg=0.0,
         top_size=400,
         field_scale=0.70,
         roi="Images/1.png",
@@ -400,11 +400,11 @@ def main():
         interpolation=cv2.INTER_LINEAR,
         # New filtering parameters
         roi_margin=10,      # Points within 10px of ROI boundary are filtered
-        edge_margin=15,     # Points within 15px of image edges are filtered
-        min_features=10,    # Re-detect when features drop below 10
+        edge_margin=30,     # Points within 15px of image edges are filtered
+        min_features=7,    # Re-detect when features drop below 10
     )
     
-    cap = cv2.VideoCapture("Images/vid1.mp4")
+    cap = cv2.VideoCapture("Images/vid2.mp4")
     if not cap.isOpened():
         print("Error: Cannot open video file")
         return

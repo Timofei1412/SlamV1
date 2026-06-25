@@ -15,6 +15,7 @@ Usage as module:
 
     unwrap_image("input.jpg", cx=575, cy=457, outer_r=412)
     unwrap_image("input.jpg", cx=575, cy=457, outer_r=412, use_opencv=False)  # old path
+    debug_parameters("input.jpg", cx=575, cy=457, outer_r=412)  # interactive tuning
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ import math
 import sys
 from pathlib import Path
 from typing import Tuple, Optional, Union
-
 import numpy as np
 from PIL import Image, ImageOps
 
@@ -42,7 +42,7 @@ except ImportError:
 
 
 DEFAULTS = {
-    "cx": 575.0,
+    "cx": 1203,
     "cy": 457.0,
     "outer_r": 412.0,
     "rotation_deg": -2.0,
@@ -303,7 +303,6 @@ def save_cv_image(path: Path, image: np.ndarray, background_rgb: Tuple[int, int,
 # ============================================================================
 # High-level API
 # ============================================================================
-
 def unwrap_image(
     input_path: Union[str, Path],
     cx: float = DEFAULTS["cx"],
@@ -361,6 +360,68 @@ def unwrap_image(
     save_cv_image(output_path, top_view, background)
 
     return output_path
+
+
+# ============================================================================
+# Debug / Interactive Tuning
+# ============================================================================
+
+def debug_parameters(
+    input_path: Union[str, Path],
+    cx: float = DEFAULTS["cx"], cy: float = DEFAULTS["cy"],
+    outer_r: float = DEFAULTS["outer_r"], lens_deg: float = DEFAULTS["lens_deg"],
+    cone_power: float = DEFAULTS["cone_power"], rotation_deg: float = DEFAULTS["rotation_deg"],
+    top_size: int = DEFAULTS["top_size"], field_scale: float = DEFAULTS["field_scale"],
+    background: Tuple[int, int, int] = (0, 0, 0),
+) -> None:
+    """Interactive parameter tuning via matplotlib sliders."""
+    if not (HAS_MATPLOTLIB and HAS_CV2):
+        raise RuntimeError("matplotlib and opencv are required for debug mode.")
+    from matplotlib.widgets import Slider
+
+    src = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
+    if src is None:
+        raise RuntimeError(f"Cannot open: {input_path}")
+    h, w = src.shape[:2]
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    plt.subplots_adjust(bottom=0.30, left=0.15, right=0.95, top=0.95)
+    ax.set_axis_off()
+
+    p = {"cx": cx, "cy": cy, "outer_r": outer_r, "rotation_deg": rotation_deg,
+         "field_scale": field_scale, "lens_deg": lens_deg, "cone_power": cone_power, "top_size": top_size}
+
+    def render():
+        mx, my = build_combined_maps(
+            top_size=int(p["top_size"]), source_width=w, source_height=h,
+            cx=p["cx"], cy=p["cy"], outer_r=p["outer_r"], rotation_deg=p["rotation_deg"],
+            field_scale=p["field_scale"], lens_deg=p["lens_deg"], cone_power=p["cone_power"])
+        out = remap_frame(src, mx, my, background)
+        if out.ndim == 3 and out.shape[2] >= 3:
+            out = cv2.cvtColor(out[:, :, :3], cv2.COLOR_BGR2RGB)
+        return out
+
+    im = ax.imshow(render())
+    defs = [
+        ("cx", 0, w, 0.26), ("cy", 0, h, 0.23), ("outer_r", 10, max(w, h), 0.20),
+        ("rotation_deg", -180, 180, 0.17), ("field_scale", 0.1, 2.0, 0.14),
+        ("lens_deg", -90, 90, 0.11), ("cone_power", 0.1, 5.0, 0.08), ("top_size", 100, 2000, 0.05)
+    ]
+    
+    sliders = []
+    for name, vmin, vmax, y in defs:
+        ax_s = plt.axes([0.25, y, 0.60, 0.02])
+        s = Slider(ax_s, name, vmin, vmax, valinit=p[name])
+        def make_update(n):
+            def update(val):
+                p[n] = val
+                im.set_data(render())
+                fig.canvas.draw_idle()
+            return update
+        s.on_changed(make_update(name))
+        sliders.append(s)
+
+    plt.show()
 
 
 # ============================================================================
@@ -463,11 +524,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        sys.exit(main())
-    else:
-        # Default demo when run without arguments
-        cxx = 1152
-        cyy = 934
-        r = 800
-        unwrap_image("Images/photo3.jpg", cx=cxx, cy=cyy, outer_r=r)
+    debug_parameters("Images/New1.jpg", cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
+    
+    # if len(sys.argv) > 1:
+    #     sys.exit(main())
+    # else:
+    #     # Default demo when run without arguments
+    #     cxx = 1152
+    #     cyy = 934
+    #     r = 800
+    #     unwrap_image("Images/photo3.jpg", cx=cxx, cy=cyy, outer_r=r)

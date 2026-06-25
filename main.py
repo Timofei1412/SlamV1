@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-
+from сommunicate import ESPCommunication
 
 def main():
     timestamp = datetime.now().strftime('%d_%H-%M-%S')
@@ -10,14 +10,16 @@ def main():
         filename=log_file,
         filemode="w",
         # datefmt='%H:%M:%S.%f',
-        format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
-        level=logging.DEBUG,
+        format='%(asctime)s | %(levelname)-8s | %(filename)s | %(message)s',
+        level=logging.INFO,
         encoding='utf-8',
-        # backupCount=3,  
+        # backupCount=3,
         )
 
-    logging.info('Приложение запущено')
-    logging.debug('Отладочная информация')
+    ESP = ESPCommunication(debug=False)
+    ESP.sendMode(3)
+    ESP.sendMotionCommand(10, -4)
+    ESP.close()
 
 if __name__ == "__main__":
     main()

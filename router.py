@@ -6,12 +6,8 @@ visualize работает как для графа, так и для пути
 import heapq
 from typing import Tuple, List, Optional
 import numpy as np
+import cv2
 
-try:
-    import cv2
-    HAS_CV2 = True
-except ImportError:
-    HAS_CV2 = False
 
 class Pathfinder:
     def __init__(self, n: int):
@@ -142,7 +138,7 @@ class Pathfinder:
         """
         Визуализация графа с автоматическим масштабированием под размер окна (макс 1400x1400).
         """
-        if not HAS_CV2:
+        if not True:
             print("Для визуализации требуется библиотека opencv-python. Установите её командой: pip install opencv-python")
             return
 
