@@ -1,73 +1,74 @@
 #include <Arduino.h>
 
 #define RPI_SERIAL Serial1
-#define PACKET_LENGTH 25
 #define BAUD_RATE 115200
 
-String buffer = "";
-extern uint8_t mode;
-extern int16_t linSpeed;
-extern int16_t rotSpeed;
+#define TX_PACKET_SIZE 18  // M(1) + mode(1) + 4*int32(16)
+#define RX_PACKET_SIZE 17  // M(1) + 4*int16(8) + 4*uint16(8)
 
-// mode 0 - wait
-// mode 1 - followLine
-// mode 2 - take
-// mode 3 - put
+#pragma pack(push, 1)
+struct RxPacket {
+    uint8_t header;     // 'M'
+    int16_t speeds[4];
+    uint16_t servos[4];
+};
+
+struct TxPacket {
+    uint8_t header;     // 'M'
+    uint8_t mode;
+    int32_t values[4];
+};
+#pragma pack(pop)
+
+// Глобальные переменные состояния (должны быть объявлены extern в основном файле)
+uint8_t mode = 0;
+int16_t motorSpeeds[4] = {0};
+uint16_t servoPositions[4] = {0};
+
+static uint8_t rxBuffer[RX_PACKET_SIZE];
+static uint8_t rxIndex = 0;
+static bool rxSync = false;
 
 void setupComms() {
     RPI_SERIAL.begin(BAUD_RATE);
-    // Небольшая задержка для стабилизации соединения
-    delay(100); 
-    sendToPi("INIT_OK");
+    delay(50);
+
+    TxPacket initPkt = {'M', 0, {0, 0, 0, 0}};
+    RPI_SERIAL.write((uint8_t*)&initPkt, sizeof(TxPacket));
 }
 
-// Неблокирующая функция чтения. Вызывать в loop()
 void readComms() {
     while (RPI_SERIAL.available() > 0) {
-        char c = RPI_SERIAL.read();
-        buffer += c;
-        
-        // Как только набрали нужную длину пакета - обрабатываем
-        if (buffer.length() >= PACKET_LENGTH) {
-            processPacket(buffer.substring(0, PACKET_LENGTH));
-            buffer = "";
+        uint8_t b = RPI_SERIAL.read();
+
+        if (!rxSync) {
+            if (b == 'M') {
+                rxBuffer[0] = b;
+                rxIndex = 1;
+                rxSync = true;
+            }
+            continue;
+        }
+
+        rxBuffer[rxIndex++] = b;
+
+        if (rxIndex >= RX_PACKET_SIZE) {
+            RxPacket* pkt = (RxPacket*)rxBuffer;
+            memcpy(motorSpeeds, pkt->speeds, sizeof(pkt->speeds));
+            memcpy(servoPositions, pkt->servos, sizeof(pkt->servos));
+            rxSync = false;
+            rxIndex = 0;
         }
     }
 }
 
-// Функция отправки любого текста на Raspberry Pi
-void sendToPi(String text) {
-    RPI_SERIAL.println(text);
-}
-
-void processPacket(String packet) {
-    // Проверяем первую и последнюю букву (валидация формата)
-    char type = packet[0];
-    char lastChar = packet[PACKET_LENGTH - 1];
-    
-    if (type == 'L') {
-        // Формат: LXXX;YYY00000000000000000
-        // Ищем разделитель
-        int sep = packet.indexOf(';');
-        if (sep != -1) {
-            // Извлекаем подстроки между L и ; а также между ; и концом полезных данных
-            String linearStr = packet.substring(1, sep);
-
-            
-            String rotationalStr = packet.substring(sep + 1);
-            
-            linSpeed = linearStr.toInt();
-            rotSpeed = rotationalStr.toInt();
-            
-            // Отправляем подтверждение на RPi
-            sendToPi("MOTION_SET:" + String(linSpeed) + "," + String(rotSpeed));
-        }
-        
-    } else if (type == 'M') {
-        // Формат: MXXX000000000000000000000
-        String dataStr = packet.substring(1);
-        mode = dataStr.toInt();
-        
-        sendToPi("MODE_SET:" + String(mode));
-    }
+void sendTelemetry(uint8_t currentMode, int32_t val1, int32_t val2, int32_t val3, int32_t val4) {
+    TxPacket pkt;
+    pkt.header = 'M';
+    pkt.mode = currentMode;
+    pkt.values[0] = val1;
+    pkt.values[1] = val2;
+    pkt.values[2] = val3;
+    pkt.values[3] = val4;
+    RPI_SERIAL.write((uint8_t*)&pkt, sizeof(TxPacket));
 }

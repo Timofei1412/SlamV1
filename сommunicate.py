@@ -1,113 +1,143 @@
-'''
-    Формат отпаравки:
-    - Первая буква - тип пакета
-    - массив данных с ";" в виде разделителя. если данные численные то формат всегда 3 цифры с ведущими нулями
-    - Просто 0 (мусор) чтобы длинна всех пакетов была ровно N символов
-'''
 import serial
+import struct
 import logging
 import threading
 import time
+from typing import List, Optional, Dict, Any
 
 
-class ESPCommunication: 
-    def __init__(self, port:str = '/dev/serial0', packetLength:int = 25, baud:int = 115200, debug:bool = False):
-        logging.info(f"Подключаемся: {port} | debug = {debug} | baud = {baud}")
+class ESPCommunication:
+    # TX: 'M'(1) + 4*int16(8) + 4*uint16(8) = 17 байт
+    TX_STRUCT = struct.Struct('<B4h4H')
+    # RX: 'M'(1) + uint8(1) + 4*int32(16) = 18 байт
+    RX_STRUCT = struct.Struct('<Bi4i')
+    RX_HEADER = b'M'
+    RX_PACKET_SIZE = 18
+
+    def __init__(self, port: str = '/dev/serial0', baud: int = 115200, debug: bool = False):
+        self.debug = debug
+        self.port = port
+        self.baud = baud
+
+        self.virtualConnection = False
+        self.ser: Optional[serial.Serial] = None
+        self.running = True
+        self._rx_buffer = bytearray()
+
+        # Хранилище последнего пакета
+        self._last_packet: Dict[str, Any] = {
+            'mode': 0,
+            'values': [0, 0, 0, 0],
+            'timestamp': 0.0,
+            'valid': False
+        }
+        self._packet_lock = threading.Lock()
+
         try:
-            self.port = port
-            self.packetLength = packetLength
-            # timeout=0.1 позволяет неблокирующему чтению в потоке работать быстрее
             self.ser = serial.Serial(port, baud, timeout=0.1)
-            self.debug = debug
-            
-            # Буфер для приема данных от ESP
-            self.buffer = ""
-            self.running = True
-            self.virtualConnection = False
-            # Запускаем поток чтения ответов от ESP
-            self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
-            self.read_thread.start()
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
+            logging.info(f"ESP Connected: {port} @ {baud}")
         except Exception as e:
-            print(f"ошибка {e}")
-            self.packetLength = packetLength
-            self.debug = debug
+            logging.error(f"Serial init failed: {e}. Virtual mode.")
             self.virtualConnection = True
-            logging.error(e)
 
-        if self.virtualConnection:
-            logging.warning(f"Подключение не выполнено, используем виртуальное подключение")
-        else:
-            logging.info(f"Готовы к работе")
-
-
-    def makeSize(self, data:str, length:int):
-        """
-        Функция для подготовки данных к отправке
-        Возвращает строку длины length, где сначала идет data, потом заполняющие "0"
-        """
-        return data + "0" * (length - len(data))
+        self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.read_thread.start()
 
     def _read_loop(self):
-        """Фоновый поток для чтения ответов от ESP"""
+        """Неблокирующий цикл чтения с точной сборкой пакетов"""
         while self.running:
+            if self.virtualConnection or not self.ser:
+                continue
+
             try:
-                if self.ser.in_waiting > 0:
-                    data = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
-                    self._process_incoming(data)
+                waiting = self.ser.in_waiting
+                if waiting > 0:
+                    data = self.ser.read(waiting)
+                    self._rx_buffer.extend(data)
+
+                    while len(self._rx_buffer) >= self.RX_PACKET_SIZE:
+                        idx = self._rx_buffer.find(self.RX_HEADER)
+                        if idx == -1:
+                            self._rx_buffer.clear()
+                            break
+
+                        if idx > 0:
+                            logging.warning(f"Discarding {idx} garbage bytes")
+                            del self._rx_buffer[:idx]
+
+                        if len(self._rx_buffer) < self.RX_PACKET_SIZE:
+                            break
+
+                        packet_bytes = bytes(self._rx_buffer[:self.RX_PACKET_SIZE])
+                        del self._rx_buffer[:self.RX_PACKET_SIZE]
+                        self._handle_rx_packet(packet_bytes)
+
             except Exception as e:
-                logging.error(f"Read error: {e}")
-            time.sleep(0.01)
+                logging.error(f"RX Loop Error: {e}")
 
-    def _process_incoming(self, data: str):
-        """Обработка входящих текстовых данных от ESP"""
-        self.buffer += data
-        # Если используем '!' как разделитель, раскомментируйте логику ниже
-        # while '!' in self.buffer:
-        #     packet, self.buffer = self.buffer.split('!', 1)
-        #     if packet: logger.info(f"ESP: {packet}")
-        
-        # Пока просто выводим все, что пришло, если это не часть пакета команды
-        logging.info(data.split())
+    def _handle_rx_packet(self, raw: bytes):
+        """Парсинг и сохранение последнего пакета"""
+        try:
+            _, mode, v1, v2, v3, v4 = self.RX_STRUCT.unpack(raw)
 
-        if self.debug and data.strip():
-            print(f"ESP <- {data.strip()}")
+            with self._packet_lock:
+                self._last_packet['mode'] = mode
+                self._last_packet['values'] = [v1, v2, v3, v4]
+                self._last_packet['timestamp'] = time.time()
+                self._last_packet['valid'] = True
 
-    def sendMotionCommand(self, linearSpeed, rotationalSpeed):
-        # Формируем полезную нагрузку
-        packet = f"L{linearSpeed:03d};{rotationalSpeed:03d}"
-        # Дополняем нулями до нужной длины
-        full_packet = self.makeSize(packet, self.packetLength)
-        
-        logging.info(f"Sent Motion: {full_packet}")
-        
-        if self.debug:
-            print(f"RPi -> ESP: {full_packet}")
-        
-        if not self.virtualConnection:
-            self.ser.write(full_packet.encode())
+            logging.info(f"RX <- Mode:{mode} Data:[{v1}, {v2}, {v3}, {v4}]")
+            if self.debug:
+                print(f"ESP <- M{mode} | {v1} {v2} {v3} {v4}")
+        except struct.error as e:
+            logging.error(f"Unpack error: {e} | Raw: {raw.hex()}")
 
-    def sendMode(self, mode):
-        # Формат MXXX...
-        packet = f"M{mode:03d}"
-        full_packet = self.makeSize(packet, self.packetLength)
-        
-        logging.info(f"Sent Mode: {full_packet}")
-        if self.debug:
-            print(f"RPi -> ESP: {full_packet}")
-        
-        
-        if not self.virtualConnection:
-            self.ser.write(full_packet.encode())
+    def get_last_packet(self) -> Dict[str, Any]:
+        """Мгновенное получение копии последнего валидного пакета от ESP"""
+        with self._packet_lock:
+            return self._last_packet.copy()
+
+    def sendMotionCommand(self, speeds: List[int], servos: List[int]):
+        """
+        Отправка команды движения
+        :param speeds: список из 4-х int16 (-32768..32767)
+        :param servos: список из 4-х uint16 (0..65535)
+        """
+        if len(speeds) != 4 or len(servos) != 4:
+            logging.error("Speeds and Servos must have exactly 4 elements each")
+            return
+
+        try:
+            packet = self.TX_STRUCT.pack(ord('M'), *speeds, *servos)
+            logging.info(f"TX -> Speeds:{speeds} Servos:{servos}")
+
+            if self.debug:
+                print(f"RPi -> ESP: {packet.hex()}")
+
+            if not self.virtualConnection and self.ser:
+                self.ser.write(packet)
+
+        except struct.error as e:
+            logging.error(f"Pack error: {e}")
 
     def close(self):
         self.running = False
-        if not self.virtualConnection:
+        if self.ser and not self.virtualConnection:
             self.ser.close()
+        logging.info("ESP Communication closed")
+
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     esp = ESPCommunication(debug=True)
     try:
         while True:
-            time.sleep(1)
+            state = esp.get_last_packet()
+            if state['valid']:
+                age_ms = (time.time() - state['timestamp']) * 1000
+                print(f"Mode: {state['mode']} | Vals: {state['values']} | Age: {age_ms:.1f}ms")
+            time.sleep(0.1)
     except KeyboardInterrupt:
         esp.close()

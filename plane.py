@@ -304,22 +304,22 @@ def save_cv_image(path: Path, image: np.ndarray, background_rgb: Tuple[int, int,
 # High-level API
 # ============================================================================
 def unwrap_image(
-    input_path: Union[str, Path],
-    cx: float = DEFAULTS["cx"],
-    cy: float = DEFAULTS["cy"],
-    outer_r: float = DEFAULTS["outer_r"],
-    lens_deg: float = DEFAULTS["lens_deg"],
-    cone_power: float = DEFAULTS["cone_power"],
-    rotation_deg: float = DEFAULTS["rotation_deg"],
-    top_size: int = DEFAULTS["top_size"],
-    field_scale: float = DEFAULTS["field_scale"],
-    output_dir: Union[str, Path] = "Output",
-    background: Tuple[int, int, int] = (0, 0, 0),
-    chunk_rows: int = 128,
-    save_lens_corrected: bool = False,
-    use_opencv: bool = True,
-    cubic: bool = False,
-) -> Path:
+        input_path: Union[str, Path],
+        cx: float = DEFAULTS["cx"],
+        cy: float = DEFAULTS["cy"],
+        outer_r: float = DEFAULTS["outer_r"],
+        lens_deg: float = DEFAULTS["lens_deg"],
+        cone_power: float = DEFAULTS["cone_power"],
+        rotation_deg: float = DEFAULTS["rotation_deg"],
+        top_size: int = DEFAULTS["top_size"],
+        field_scale: float = DEFAULTS["field_scale"],
+        output_dir: Union[str, Path] = "Output",
+        background: Tuple[int, int, int] = (0, 0, 0),
+        chunk_rows: int = 128,
+        save_lens_corrected: bool = False,
+        use_opencv: bool = True,
+        cubic: bool = False,
+    ) -> Path:
     """
     Unwrap a conical mirror image to a top-down view.
 
@@ -367,13 +367,13 @@ def unwrap_image(
 # ============================================================================
 
 def debug_parameters(
-    input_path: Union[str, Path],
-    cx: float = DEFAULTS["cx"], cy: float = DEFAULTS["cy"],
-    outer_r: float = DEFAULTS["outer_r"], lens_deg: float = DEFAULTS["lens_deg"],
-    cone_power: float = DEFAULTS["cone_power"], rotation_deg: float = DEFAULTS["rotation_deg"],
-    top_size: int = DEFAULTS["top_size"], field_scale: float = DEFAULTS["field_scale"],
-    background: Tuple[int, int, int] = (0, 0, 0),
-) -> None:
+        input_path: Union[str, Path],
+        cx: float = DEFAULTS["cx"], cy: float = DEFAULTS["cy"],
+        outer_r: float = DEFAULTS["outer_r"], lens_deg: float = DEFAULTS["lens_deg"],
+        cone_power: float = DEFAULTS["cone_power"], rotation_deg: float = DEFAULTS["rotation_deg"],
+        top_size: int = DEFAULTS["top_size"], field_scale: float = DEFAULTS["field_scale"],
+        background: Tuple[int, int, int] = (0, 0, 0),
+    ) -> None:
     """Interactive parameter tuning via matplotlib sliders."""
     if not (HAS_MATPLOTLIB and HAS_CV2):
         raise RuntimeError("matplotlib and opencv are required for debug mode.")
@@ -526,11 +526,3 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     debug_parameters("Images/New1.jpg", cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
     
-    # if len(sys.argv) > 1:
-    #     sys.exit(main())
-    # else:
-    #     # Default demo when run without arguments
-    #     cxx = 1152
-    #     cyy = 934
-    #     r = 800
-    #     unwrap_image("Images/photo3.jpg", cx=cxx, cy=cyy, outer_r=r)
