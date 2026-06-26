@@ -122,6 +122,19 @@ class ESPCommunication:
         except struct.error as e:
             logging.error(f"Pack error: {e}")
 
+    def sendMode(self, mode: int):
+        """
+        Отправка команды режима.
+        Режим передается как第一个 speeds[0].
+        
+        :param mode: Режим работы (int16)
+        """
+        # Отправляем как команду движения с нулевыми скоростями и серво
+        zeros = [0, 0, 0, 0]
+        mode_speed = [mode, 0, 0, 0]
+        self.sendMotionCommand(mode_speed, zeros)
+        logging.info(f"TX -> Mode command sent: {mode}")
+
     def close(self):
         self.running = False
         if self.ser and not self.virtualConnection:
