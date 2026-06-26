@@ -3,16 +3,33 @@ import struct
 import logging
 import threading
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 
 class ESPCommunication:
-    # TX: 'M'(1) + 4*int16(8) + 4*uint16(8) = 17 байт
+    """
+    Класс для коммуникации с ESP32.
+    
+    Протокол:
+    - RPi -> ESP: 'M'(1) + 4×int16(8) + 4×uint16(8) = 17 байт
+    - ESP -> RPi: 'M'(1) + uint8(1) + 4×int32(16) = 18 байт
+    - ESP -> RPi (текст): 'T'(1) + uint8(len) + data(n) = 2+n байт
+    
+    Каждой команде от RPi должен соответствовать ответ от ESP.
+    """
+    
+    # TX: 'M'(1) + 4×int16(8) + 4×uint16(8) = 17 байт
     TX_STRUCT = struct.Struct('<B4h4H')
-    # RX: 'M'(1) + uint8(1) + 4*int32(16) = 18 байт
-    RX_STRUCT = struct.Struct('<Bi4i')
-    RX_HEADER = b'M'
+    # RX: 'M'(1) + uint8(1) + 4×int32(16) = 18 байт
+    RX_STRUCT = struct.Struct('<BB4i')
     RX_PACKET_SIZE = 18
+    
+    # Текстовый пакет: 'T'(1) + uint8(len) + data(n)
+    TEXT_HEADER = b'T'
+    
+    # Таймауты и лимиты
+    RESPONSE_TIMEOUT_MS = 500  # Таймаут ожидания ответа от ESP
+    MAX_MISSED_RESPONSES = 10  # Максимум пропущенных ответов перед выходом
 
     def __init__(self, port: str = '/dev/serial0', baud: int = 115200, debug: bool = False):
         self.debug = debug
@@ -23,15 +40,21 @@ class ESPCommunication:
         self.ser: Optional[serial.Serial] = None
         self.running = True
         self._rx_buffer = bytearray()
-
-        # Хранилище последнего пакета
-        self._last_packet: Dict[str, Any] = {
+        
+        # Счетчики для мониторинга связи
+        self._sent_count = 0
+        self._received_count = 0
+        self._missed_responses = 0
+        self._last_command = ""
+        
+        # Синхронизация ответа
+        self._response_event = threading.Event()
+        self._last_response: Dict[str, Any] = {
             'mode': 0,
             'values': [0, 0, 0, 0],
-            'timestamp': 0.0,
             'valid': False
         }
-        self._packet_lock = threading.Lock()
+        self._response_lock = threading.Lock()
 
         try:
             self.ser = serial.Serial(port, baud, timeout=0.1)
@@ -49,6 +72,7 @@ class ESPCommunication:
         """Неблокирующий цикл чтения с точной сборкой пакетов"""
         while self.running:
             if self.virtualConnection or not self.ser:
+                time.sleep(0.01)
                 continue
 
             try:
@@ -56,101 +80,235 @@ class ESPCommunication:
                 if waiting > 0:
                     data = self.ser.read(waiting)
                     self._rx_buffer.extend(data)
-
-                    while len(self._rx_buffer) >= self.RX_PACKET_SIZE:
-                        idx = self._rx_buffer.find(self.RX_HEADER)
-                        if idx == -1:
-                            self._rx_buffer.clear()
-                            break
-
-                        if idx > 0:
-                            logging.warning(f"Discarding {idx} garbage bytes")
-                            del self._rx_buffer[:idx]
-
-                        if len(self._rx_buffer) < self.RX_PACKET_SIZE:
-                            break
-
-                        packet_bytes = bytes(self._rx_buffer[:self.RX_PACKET_SIZE])
-                        del self._rx_buffer[:self.RX_PACKET_SIZE]
-                        self._handle_rx_packet(packet_bytes)
+                    
+                    # Обработка буфера
+                    self._process_rx_buffer()
 
             except Exception as e:
                 logging.error(f"RX Loop Error: {e}")
-
-    def _handle_rx_packet(self, raw: bytes):
-        """Парсинг и сохранение последнего пакета"""
+                time.sleep(0.01)
+    
+    def _process_rx_buffer(self):
+        """Обработка принятых данных из буфера"""
+        while len(self._rx_buffer) > 0:
+            # Проверяем на текстовый пакет
+            if self._rx_buffer[0:1] == self.TEXT_HEADER:
+                if len(self._rx_buffer) >= 2:
+                    text_len = self._rx_buffer[1]
+                    if len(self._rx_buffer) >= 2 + text_len:
+                        text_data = bytes(self._rx_buffer[2:2 + text_len])
+                        del self._rx_buffer[:2 + text_len]
+                        self._handle_text_packet(text_data)
+                    else:
+                        break  # Ждем остаток текста
+                else:
+                    break  # Ждем байт длины
+            elif self._rx_buffer[0:1] == b'M':
+                if len(self._rx_buffer) >= self.RX_PACKET_SIZE:
+                    packet_bytes = bytes(self._rx_buffer[:self.RX_PACKET_SIZE])
+                    del self._rx_buffer[:self.RX_PACKET_SIZE]
+                    self._handle_data_packet(packet_bytes)
+                else:
+                    break  # Ждем остаток пакета
+            else:
+                # Неизвестный байт - пропускаем
+                logging.warning(f"Discarding unknown byte: {hex(self._rx_buffer[0])}")
+                del self._rx_buffer[:1]
+    
+    def _handle_text_packet(self, data: bytes):
+        """Обработка текстового пакета от ESP"""
+        try:
+            text = data.decode('utf-8').rstrip('\x00')
+            if text:
+                logging.info(f"ESP TEXT: {text}")
+                if self.debug:
+                    print(f"[ESP] {text}")
+        except Exception as e:
+            logging.warning(f"Failed to decode text from ESP: {e}")
+    
+    def _handle_data_packet(self, raw: bytes):
+        """Обработка пакета данных от ESP"""
         try:
             _, mode, v1, v2, v3, v4 = self.RX_STRUCT.unpack(raw)
 
-            with self._packet_lock:
-                self._last_packet['mode'] = mode
-                self._last_packet['values'] = [v1, v2, v3, v4]
-                self._last_packet['timestamp'] = time.time()
-                self._last_packet['valid'] = True
+            with self._response_lock:
+                self._last_response['mode'] = mode
+                self._last_response['values'] = [v1, v2, v3, v4]
+                self._last_response['valid'] = True
 
-            logging.info(f"RX <- Mode:{mode} Data:[{v1}, {v2}, {v3}, {v4}]")
+            # Сигнализируем о получении ответа
+            self._response_event.set()
+            self._received_count += 1
+            
             if self.debug:
-                print(f"ESP <- M{mode} | {v1} {v2} {v3} {v4}")
+                print(f"ESP -> RPi: Mode={mode} Data=[{v1}, {v2}, {v3}, {v4}]")
+                
         except struct.error as e:
             logging.error(f"Unpack error: {e} | Raw: {raw.hex()}")
-
-    def get_last_packet(self) -> Dict[str, Any]:
-        """Мгновенное получение копии последнего валидного пакета от ESP"""
-        with self._packet_lock:
-            return self._last_packet.copy()
-
-    def sendMotionCommand(self, speeds: List[int], servos: List[int]):
+    
+    def _clear_response(self):
+        """Очистка флага ответа перед отправкой команды"""
+        self._response_event.clear()
+        with self._response_lock:
+            self._last_response['valid'] = False
+    
+    def send_command(self, speeds: List[int], servos: List[int], 
+                     wait_response: bool = True) -> Tuple[bool, Dict[str, Any]]:
         """
-        Отправка команды движения
+        Отправка команды движения с ожиданием ответа.
+        
         :param speeds: список из 4-х int16 (-32768..32767)
         :param servos: список из 4-х uint16 (0..65535)
+        :param wait_response: ждать ли ответ от ESP
+        
+        :returns: Tuple[успех, данные_ответа]
         """
         if len(speeds) != 4 or len(servos) != 4:
             logging.error("Speeds and Servos must have exactly 4 elements each")
-            return
-
+            return False, {}
+        
+        if self.virtualConnection:
+            # Виртуальный режим - просто возвращаем успех
+            return True, {'mode': 0, 'values': [0, 0, 0, 0], 'valid': True}
+        
         try:
+            # Формируем пакет
             packet = self.TX_STRUCT.pack(ord('M'), *speeds, *servos)
-            logging.info(f"TX -> Speeds:{speeds} Servos:{servos}")
-
+            command_str = f"M[{speeds}] [{servos}]"
+            self._last_command = command_str
+            
+            # Очищаем флаг ответа
+            self._clear_response()
+            
+            # Отправляем
+            self.ser.write(packet)
+            self._sent_count += 1
+            
+            logging.debug(f"TX -> {command_str}")
             if self.debug:
                 print(f"RPi -> ESP: {packet.hex()}")
-
-            if not self.virtualConnection and self.ser:
-                self.ser.write(packet)
-
+            
+            if not wait_response:
+                return True, {}
+            
+            # Ждем ответ с таймаутом
+            if self._response_event.wait(timeout=self.RESPONSE_TIMEOUT_MS / 1000.0):
+                # Получили ответ
+                with self._response_lock:
+                    self._missed_responses = 0  # Сброс счетчика пропущенных
+                    return self._last_response['valid'], self._last_response.copy()
+            else:
+                # Таймаут
+                self._missed_responses += 1
+                logging.warning(f"ESP did not respond to: {command_str} "
+                             f"(missed: {self._missed_responses}/{self.MAX_MISSED_RESPONSES})")
+                
+                if self._missed_responses >= self.MAX_MISSED_RESPONSES:
+                    logging.error(f"Too many missed ESP responses ({self._missed_responses}). "
+                                f"Connection lost. Exiting.")
+                    self.running = False
+                    return False, {}
+                
+                return False, {}
+                
+        except serial.SerialException as e:
+            logging.error(f"Serial error: {e}")
+            return False, {}
         except struct.error as e:
             logging.error(f"Pack error: {e}")
+            return False, {}
 
-    def sendMode(self, mode: int):
+    def sendMotionCommand(self, speeds: List[int], servos: List[int]) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Отправка команды движения с ожиданием ответа.
+        Алиас для send_command для совместимости.
+        
+        :param speeds: список из 4-х int16 (-32768..32767)
+        :param servos: список из 4-х uint16 (0..65535)
+        
+        :returns: Tuple[успех, данные_ответа]
+        """
+        return self.send_command(speeds, servos, wait_response=True)
+
+    def sendMode(self, mode: int) -> Tuple[bool, Dict[str, Any]]:
         """
         Отправка команды режима.
-        Режим передается как第一个 speeds[0].
+        Режим передается как mode в пакете.
         
-        :param mode: Режим работы (int16)
+        :param mode: Режим работы (0-255)
+        
+        :returns: Tuple[успех, данные_ответа]
         """
-        # Отправляем как команду движения с нулевыми скоростями и серво
-        zeros = [0, 0, 0, 0]
-        mode_speed = [mode, 0, 0, 0]
-        self.sendMotionCommand(mode_speed, zeros)
-        logging.info(f"TX -> Mode command sent: {mode}")
+        # Отправляем команду с mode как первым элементом values
+        # В ESP это будет интерпретироваться как команда смены режима
+        speeds = [mode, 0, 0, 0]  # mode в speeds[0]
+        servos = [0, 0, 0, 0]
+        
+        logging.info(f"TX -> Mode command: {mode}")
+        return self.send_command(speeds, servos, wait_response=True)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Получить статистику коммуникации."""
+        return {
+            'sent': self._sent_count,
+            'received': self._received_count,
+            'missed': self._missed_responses,
+            'success_rate': (self._received_count / self._sent_count * 100) 
+                           if self._sent_count > 0 else 0,
+            'virtual': self.virtualConnection
+        }
+    
+    def is_connected(self) -> bool:
+        """Проверить статус соединения."""
+        return self.running and not (self._missed_responses >= self.MAX_MISSED_RESPONSES)
 
     def close(self):
         self.running = False
         if self.ser and not self.virtualConnection:
             self.ser.close()
-        logging.info("ESP Communication closed")
+        
+        stats = self.get_stats()
+        logging.info(f"ESP Communication closed. Stats: {stats}")
+        print(f"\nCommunication stats: sent={stats['sent']}, "
+              f"received={stats['received']}, missed={stats['missed']}")
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)-8s | %(message)s')
+    
     esp = ESPCommunication(debug=True)
     try:
-        while True:
-            state = esp.get_last_packet()
-            if state['valid']:
-                age_ms = (time.time() - state['timestamp']) * 1000
-                print(f"Mode: {state['mode']} | Vals: {state['values']} | Age: {age_ms:.1f}ms")
-            time.sleep(0.1)
+        print("\n=== ESP Communication Test ===")
+        print("Commands: [speeds], [servos]")
+        print("Press Ctrl+C to exit\n")
+        
+        while esp.is_connected():
+            # Читаем команду из консоли
+            try:
+                cmd = input("> ").strip()
+                if not cmd:
+                    continue
+                    
+                # Парсим команду
+                parts = cmd.split(' ')
+                if len(parts) >= 2:
+                    speeds = [int(x) for x in parts[0].strip('[]').split(',')]
+                    servos = [int(x) for x in parts[1].strip('[]').split(',')]
+                    
+                    success, response = esp.sendMotionCommand(speeds, servos)
+                    if success:
+                        print(f"Response: Mode={response['mode']}, Values={response['values']}")
+                    else:
+                        print("No response from ESP")
+                else:
+                    print("Invalid format. Use: [a,b,c,d] [e,f,g,h]")
+                    
+            except ValueError:
+                print("Invalid numbers")
+            except EOFError:
+                break
+                
     except KeyboardInterrupt:
+        print("\nExiting...")
+    finally:
         esp.close()

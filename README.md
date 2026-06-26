@@ -277,6 +277,114 @@ while True:
 
 ---
 
+### buildGraph.py - Graph Construction
+
+**Purpose:** Builds a graph of the explored field based on sector analysis. Determines which sectors can be connected based on floor level, colored pipes, and ramps.
+
+**API:**
+
+#### Classes
+
+##### `FloorLevel` (Enum)
+Floor level detection values.
+- `WHITE` - Light floor
+- `BLACK` - Dark floor  
+- `UNKNOWN` - Undetermined
+
+##### `Pipe`
+Represents a colored pipe obstacle.
+- `sector`: Tuple[int, int] - Sector coordinates (row, col)
+- `color`: str - "blue", "red", or "green"
+- `position`: Tuple[float, float] - Pixel position
+
+##### `Ramp`
+Represents a ramp between floor levels.
+- `sector`: Tuple[int, int] - Sector coordinates
+- `direction_from`: str - Entry direction ('U', 'D', 'L', 'R')
+- `target_level`: str - Target level ("white" or "black")
+- `circles`: List[Tuple[str, float, float]] - Circle positions
+
+##### `Sector`
+Represents a grid sector.
+- `row`, `col`: int - Grid coordinates
+- `floor_level`: FloorLevel - Floor color
+- `has_green_pipe`: bool - Contains green pipe
+- `pipes`: List[Pipe] - All pipes in sector
+- `ramp`: Optional[Ramp] - Ramp if present
+- `visited`: bool - Has been explored
+
+##### `BuildGraph`
+Main graph construction class.
+
+###### Methods
+
+`__init__(grid_rows=4, grid_cols=4)`
+Creates empty graph with specified dimensions.
+
+`add_sector_analysis(row, col, analysis)`
+Adds analysis result for a sector from `analyse.analyze_image()`.
+
+`can_build_edge(from_pos, direction) -> Tuple[bool, str]`
+Checks if edge can be built to adjacent sector.
+
+`build_edges()`
+Builds all possible edges based on analyzed sectors.
+
+`get_pipe_positions(color) -> List[Pipe]`
+Gets pipes of specified color ('green', 'blue', 'red').
+
+`get_unvisited_sectors() -> List[Tuple[int, int]]`
+Gets unexplored sectors with known floor level.
+
+`is_field_explored(required_green=3, required_colored=3) -> bool`
+Checks if exploration is complete (3 green + 3 colored pipes).
+
+`get_nearest_unvisited(start) -> Optional[Tuple[int, int]]`
+Finds nearest unvisited sector.
+
+`find_path_to(start, end) -> Tuple[int, str, List[Tuple]]`
+Finds path using Dijkstra's algorithm with turn minimization.
+
+`get_status() -> dict`
+Returns exploration statistics.
+
+---
+
+#### Edge Building Rules
+
+An edge can be built between sectors if:
+1. **Same floor level** + **no colored pipes** → Edge allowed
+2. **Ramp present** (dark shape with red/blue circles):
+   - Red left + Blue right + current level WHITE → Can go to BLACK
+   - Blue left + Red right + current level BLACK → Can go to WHITE
+
+---
+
+#### Example Usage
+
+```python
+from buildGraph import BuildGraph
+
+graph = BuildGraph(grid_rows=4, grid_cols=4)
+
+# Add sector analysis
+analysis = analyse.analyze_image('sector1.jpg')
+graph.add_sector_analysis(0, 0, analysis)
+
+# Build graph
+graph.build_edges()
+
+# Check if explored
+if graph.is_field_explored():
+    print("Field explored!")
+
+# Find path
+dist, commands, path = graph.find_path_to((0, 0), (2, 3))
+print(f"Path: {commands}")
+```
+
+---
+
 ### router.py - Pathfinding
 
 **Purpose:** Creates an NxN grid graph and finds optimal paths using Dijkstra's algorithm with turn minimization.
@@ -491,7 +599,7 @@ Saves sectors as `1.jpg`, `2.jpg`, `3.jpg`, `4.jpg`.
 
 ### communicate.py - ESP32 Communication
 
-**Purpose:** Handles serial communication with ESP32 microcontroller for motor control.
+**Purpose:** Handles serial communication with ESP32 microcontroller for motor control. Implements a request-response protocol where each command expects a response from ESP.
 
 **API:**
 
@@ -510,68 +618,106 @@ Falls back to virtual mode if serial unavailable.
 
 ---
 
-##### `sendMotionCommand(speeds, servos) -> None`
-Sends motion command to ESP32.
+##### `sendMotionCommand(speeds, servos) -> Tuple[bool, dict]`
+Sends motion command to ESP32 and waits for response.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `speeds` | list[4] | List of 4 int16 speed values (-32768 to 32767) |
 | `servos` | list[4] | List of 4 uint16 servo positions (0 to 65535) |
 
+**Returns:** Tuple of (success, response_data)
+- `success`: True if ESP responded within timeout
+- `response_data`: Dict with mode and values if successful
+
 ---
 
-##### `get_last_packet() -> dict`
-Returns the most recent valid packet from ESP32.
+##### `sendMode(mode) -> Tuple[bool, dict]`
+Sends mode change command to ESP32.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `mode` | int | Mode number (0-255) |
+
+**Returns:** Tuple of (success, response_data)
+
+---
+
+##### `get_stats() -> dict`
+Returns communication statistics.
 
 **Returns:**
 ```python
 {
-    'mode': int,           # Operating mode
-    'values': [int, int, int, int],  # Sensor values
-    'timestamp': float,    # Reception timestamp
-    'valid': bool          # Packet validity
+    'sent': int,           # Total commands sent
+    'received': int,        # Total responses received
+    'missed': int,         # Missed responses count
+    'success_rate': float, # Success rate percentage
+    'virtual': bool        # Virtual mode active
 }
 ```
 
 ---
 
-##### `close() -> None`
-Closes serial connection and stops read thread.
+##### `is_connected() -> bool`
+Checks if connection is still alive.
 
 ---
 
-#### Packet Formats
+##### `close() -> None`
+Closes serial connection and prints final statistics.
 
-**TX (Raspberry Pi → ESP32):** 17 bytes
+---
+
+#### Communication Protocol
+
+**RPi → ESP32 (17 bytes):**
 ```
 Header: 'M' (1 byte)
-Speeds: 4 × int16 (8 bytes)
-Servos: 4 × uint16 (8 bytes)
+Speeds: 4 × int16 (8 bytes) - motors[0..3]
+Servos: 4 × uint16 (8 bytes) - servos[0..3]
 ```
 
-**RX (ESP32 → Raspberry Pi):** 18 bytes
+**ESP32 → RPi Data (18 bytes):**
 ```
 Header: 'M' (1 byte)
 Mode: uint8 (1 byte)
-Values: 4 × int32 (16 bytes)
+Values: 4 × int32 (16 bytes) - sensor values
 ```
+
+**ESP32 → RPi Text (2+n bytes):**
+```
+Header: 'T' (1 byte)
+Length: uint8 (1 byte)
+Data: n bytes (UTF-8 text)
+```
+
+#### Timeout Behavior
+
+- **Response timeout:** 500ms
+- **Max missed responses:** 10 (exiting after this limit)
+- **Warning logged:** "ESP did not respond to: {command}" after each timeout
+- **Error logged and exit:** After MAX_MISSED_RESPONSES missed responses
 
 ---
 
 #### Example Usage
 
 ```python
-from communicate import ESPCommunication
+from сommunicate import ESPCommunication
 
 esp = ESPCommunication(port='/dev/ttyUSB0', debug=True)
 
-# Send motion command: speeds=[10, -4, 0, 0], servos=[0, 0, 0, 0]
-esp.sendMotionCommand([10, -4, 0, 0], [0, 0, 0, 0])
+# Send motion command and wait for response
+success, response = esp.sendMotionCommand([10, -4, 0, 0], [0, 0, 0, 0])
+if success:
+    print(f"Mode: {response['mode']}, Values: {response['values']}")
+else:
+    print("ESP did not respond")
 
-# Read response
-state = esp.get_last_packet()
-if state['valid']:
-    print(f"Mode: {state['mode']}, Values: {state['values']}")
+# Check connection status
+if not esp.is_connected():
+    print("Connection lost!")
 
 esp.close()
 ```
