@@ -3,7 +3,34 @@ import struct
 import logging
 import threading
 import time
+import os
+from datetime import datetime
 from typing import List, Optional, Dict, Any, Tuple
+
+
+# =============================================================================
+# DEBUG FLAG
+# =============================================================================
+DEBUG = True  # Set to False to disable debug output
+
+
+def log_debug(text: str):
+    """Вывести debug текст если DEBUG=True."""
+    if DEBUG:
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        prefix = f"[ESP_DEBUG][{timestamp}]"
+        print(f"{prefix} {text}")
+        logging.debug(f"{prefix} {text}")
+
+
+def log_esp_rx(data: dict):
+    """Логировать принятые данные от ESP."""
+    log_debug(f"RX <- mode={data.get('mode')}, values={data.get('values')}")
+
+
+def log_esp_tx(speeds: List[int], servos: List[int]):
+    """Логировать отправленные данные ESP."""
+    log_debug(f"TX -> speeds={speeds}, servos={servos}")
 
 
 class ESPCommunication:
@@ -80,12 +107,14 @@ class ESPCommunication:
                 if waiting > 0:
                     data = self.ser.read(waiting)
                     self._rx_buffer.extend(data)
+                    log_debug(f"RX buffer +{len(data)} bytes, total={len(self._rx_buffer)}")
                     
                     # Обработка буфера
                     self._process_rx_buffer()
 
             except Exception as e:
                 logging.error(f"RX Loop Error: {e}")
+                log_debug(f"RX Error: {e}")
                 time.sleep(0.01)
     
     def _process_rx_buffer(self):
@@ -112,7 +141,9 @@ class ESPCommunication:
                     break  # Ждем остаток пакета
             else:
                 # Неизвестный байт - пропускаем
-                logging.warning(f"Discarding unknown byte: {hex(self._rx_buffer[0])}")
+                unknown_byte = hex(self._rx_buffer[0])
+                logging.warning(f"Discarding unknown byte: {unknown_byte}")
+                log_debug(f"Unknown byte discarded: {unknown_byte}")
                 del self._rx_buffer[:1]
     
     def _handle_text_packet(self, data: bytes):
@@ -121,10 +152,12 @@ class ESPCommunication:
             text = data.decode('utf-8').rstrip('\x00')
             if text:
                 logging.info(f"ESP TEXT: {text}")
+                log_debug(f"ESP text: {text}")
                 if self.debug:
                     print(f"[ESP] {text}")
         except Exception as e:
             logging.warning(f"Failed to decode text from ESP: {e}")
+            log_debug(f"Text decode error: {e}")
     
     def _handle_data_packet(self, raw: bytes):
         """Обработка пакета данных от ESP"""
@@ -140,11 +173,14 @@ class ESPCommunication:
             self._response_event.set()
             self._received_count += 1
             
+            log_esp_rx({'mode': mode, 'values': [v1, v2, v3, v4]})
+            
             if self.debug:
                 print(f"ESP -> RPi: Mode={mode} Data=[{v1}, {v2}, {v3}, {v4}]")
                 
         except struct.error as e:
             logging.error(f"Unpack error: {e} | Raw: {raw.hex()}")
+            log_debug(f"Unpack error: {e}")
     
     def _clear_response(self):
         """Очистка флага ответа перед отправкой команды"""
@@ -165,10 +201,11 @@ class ESPCommunication:
         """
         if len(speeds) != 4 or len(servos) != 4:
             logging.error("Speeds and Servos must have exactly 4 elements each")
+            log_debug(f"Invalid command: speeds/servos length error")
             return False, {}
         
         if self.virtualConnection:
-            # Виртуальный режим - просто возвращаем успех
+            log_debug(f"VIRTUAL MODE: would send speeds={speeds}")
             return True, {'mode': 0, 'values': [0, 0, 0, 0], 'valid': True}
         
         try:
@@ -184,7 +221,9 @@ class ESPCommunication:
             self.ser.write(packet)
             self._sent_count += 1
             
-            logging.debug(f"TX -> {command_str}")
+            log_esp_tx(speeds, servos)
+            logging.info(f"TX -> speeds={speeds}, servos={servos}")
+            
             if self.debug:
                 print(f"RPi -> ESP: {packet.hex()}")
             
@@ -202,10 +241,12 @@ class ESPCommunication:
                 self._missed_responses += 1
                 logging.warning(f"ESP did not respond to: {command_str} "
                              f"(missed: {self._missed_responses}/{self.MAX_MISSED_RESPONSES})")
+                log_debug(f"TIMEOUT: no response (missed={self._missed_responses})")
                 
                 if self._missed_responses >= self.MAX_MISSED_RESPONSES:
                     logging.error(f"Too many missed ESP responses ({self._missed_responses}). "
                                 f"Connection lost. Exiting.")
+                    log_debug(f"CONNECTION LOST: max missed responses reached")
                     self.running = False
                     return False, {}
                 
@@ -213,9 +254,11 @@ class ESPCommunication:
                 
         except serial.SerialException as e:
             logging.error(f"Serial error: {e}")
+            log_debug(f"Serial exception: {e}")
             return False, {}
         except struct.error as e:
             logging.error(f"Pack error: {e}")
+            log_debug(f"Pack error: {e}")
             return False, {}
 
     def sendMotionCommand(self, speeds: List[int], servos: List[int]) -> Tuple[bool, Dict[str, Any]]:

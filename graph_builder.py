@@ -12,14 +12,42 @@
 - Синие, красные и зеленые трубы заносятся в отдельные массивы для маршрутизации
 """
 
+# =============================================================================
+# DEBUG FLAG
+# =============================================================================
+DEBUG = True  # Set to False to disable debug output
+
+
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Set
 from enum import Enum
 import logging
+import os
+from datetime import datetime
 
 from router import Pathfinder
+
+
+def log_debug(text: str):
+    """Вывести debug текст если DEBUG=True."""
+    if DEBUG:
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        prefix = f"[GRAPH_DEBUG][{timestamp}]"
+        print(f"{prefix} {text}")
+        logging.debug(f"{prefix} {text}")
+
+
+def log_graph_state(graph: 'BuildGraph', operation: str):
+    """Логировать состояние графа."""
+    if not DEBUG:
+        return
+    
+    status = graph.get_status()
+    log_debug(f"{operation}: sectors={status['visited_sectors']}/{status['total_sectors']}, "
+              f"green={status['green_pipes']}, blue={status['blue_pipes']}, "
+              f"red={status['red_pipes']}, ramps={status['ramps']}")
 
 
 class FloorLevel(Enum):

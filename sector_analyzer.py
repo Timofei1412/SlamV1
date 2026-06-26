@@ -1,16 +1,45 @@
 '''
 Анализирует изображения 1.png, 2.png, 3.png, 4.png из папки Output и сохраняет данные в .json файл
 '''
+
+# =============================================================================
+# DEBUG FLAG
+# =============================================================================
+DEBUG = True  # Set to False to disable debug output
+
 import cv2
 import numpy as np
 import os
 import json
 import glob
+import logging
+from datetime import datetime
 
 # --- Пороговые значения для настройки (в пикселях) ---
 BLACK_AREA_FLOOR_THRESHOLD = 10000
 BLACK_AREA_MIN_THRESHOLD = 10000
 GREEN_AREA_THRESHOLD = 500
+
+
+def log_debug(text: str):
+    """Вывести debug текст если DEBUG=True."""
+    if DEBUG:
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        prefix = f"[ANALYZE_DEBUG][{timestamp}]"
+        print(f"{prefix} {text}")
+        logging.debug(f"{prefix} {text}")
+
+
+def save_debug_mask(mask, name: str):
+    """Сохранить debug маску."""
+    if not DEBUG:
+        return
+    
+    os.makedirs('Output/debug/masks', exist_ok=True)
+    path = f"Output/debug/masks/{name}_{datetime.now().strftime('%H%M%S_%f')}.png"
+    cv2.imwrite(path, mask)
+    log_debug(f"Saved mask: {path}")
+
 
 def analyze_image(image_path):
     """
@@ -22,9 +51,15 @@ def analyze_image(image_path):
     Returns:
         dict: Результаты анализа или None если ошибка
     """
+    log_debug(f"Analyzing image: {image_path}")
+    
     img = cv2.imread(image_path)
     if img is None:
+        log_debug(f"Failed to load image: {image_path}")
         return None
+    
+    h, w = img.shape[:2]
+    log_debug(f"Image loaded: {w}x{h}")
         
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
