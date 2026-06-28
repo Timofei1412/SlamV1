@@ -42,7 +42,12 @@ class RobotConfig:
     MIN_MOTOR_SPEED = 100      # Минимальная скорость для движения
     STOP_SPEED = 0             # Скорость остановки
     
-    # --- Серво ---
+    # Калибровка моторов (компенсация различий между моторами)
+    # Умножается на скорость левого мотора
+    LEFT_MOTOR_CALIBRATION = 1.0   # < 1.0 если левый быстрее
+    RIGHT_MOTOR_CALIBRATION = 1.0  # < 1.0 если правый быстрее
+    
+    # --- Серво для колес ---
     SERVO_STRAIGHT_ANGLE = 32768  # Среднее положение (колеса ровно) ~90°
     SERVO_MIN = 0                 # Минимум
     SERVO_MAX = 65535             # Максимум
@@ -57,10 +62,21 @@ class RobotConfig:
     SERVO_RIGHT = SERVO_STRAIGHT_ANGLE - TURN_ANGLE_OFFSET  # Поворот вправо
     SERVO_STRAIGHT = SERVO_STRAIGHT_ANGLE                  # Прямо
     
+    # --- Серво для манипулятора (серво 2 и 3) ---
+    # Позиции для схвата/манипулятора
+    SERVO_ARM_STRAIGHT = 32768    # Манипулятор прямо (нейтральное)
+    SERVO_ARM_UP = 40000            # Манипулятор поднят
+    SERVO_ARM_DOWN = 25000          # Манипулятор опущен
+    
+    # Позиции для захвата
+    SERVO_GRIP_OPEN = 45000        # Захват открыт
+    SERVO_GRIP_CLOSED = 20000      # Захват закрыт
+    
     # --- Тайминги ---
     CROSSROAD_STOP_TIME_MS = 500   # Время остановки на перекрестке (мс)
     SERVO_ROTATE_TIME_MS = 300     # Время поворота серво (мс)
     WHEELS_RETURN_TIME_MS = 200    # Время возврата колес в прямое положение (мс)
+    MANIPULATOR_SERVO_TIME_MS = 300  # Время движения серво манипулятора
     
     # --- Движение ---
     # Трапецеидальный профиль скорости
@@ -73,6 +89,13 @@ class RobotConfig:
     # ЭТО ЗНАЧЕНИЕ НУЖНО ОПРЕДЕЛИТЬ ЭКСПЕРИМЕНТАЛЬНО!
     TICK_PER_90_TURN = 1000        # Тиков на 90° поворот
     TURN_MOTOR_SPEED = 400         # Скорость моторов при повороте тележки
+    
+    # --- Манипулятор ---
+    # Расстояние для take/put операций (в тиках энкодера)
+    MANIPULATOR_MOVE_TICKS = 500   # Тиков для движения к объекту
+    
+    # Скорость движения манипулятора (медленнее чем обычно)
+    MANIPULATOR_MOVE_SPEED = 300   # Скорость для take/put маневров
     
     # --- Тики на единицу пути ---
     # Для движения вперед - можно использовать для точной остановки
@@ -104,6 +127,17 @@ class RobotState(Enum):
     TURNING_WHEELS = auto()       # Поворот колес сервомоторами
     ROTATING_ROBOT = auto()        # Поворот тележки (моторы в противоположных направлениях)
     RETURNING_WHEELS = auto()      # Возврат колес в прямое положение
+    
+    # Операции с манипулятором
+    MANIP_STOPPING = auto()       # Остановка перед операцией
+    MANIP_SETUP = auto()           # Установка начального положения манипулятора
+    MANIP_MOVING_FORWARD = auto() # Движение вперед к объекту
+    MANIP_GRABBING = auto()        # Захват объекта
+    MANIP_LIFTING = auto()         # Подъем объекта
+    MANIP_MOVING_BACKWARD = auto() # Движение назад
+    MANIP_RELEASING = auto()       # Освобождение объекта
+    MANIP_LOWERING = auto()        # Опускание манипулятора
+    MANIP_RETURNING = auto()       # Возврат в исходное состояние
     
     # Специальные состояния
     ERROR = auto()                # Ошибка
@@ -170,6 +204,17 @@ class TurnType(Enum):
     RIGHT = 'R'     # Поворот направо (90° CW)
     AROUND = 'A'    # Разворот (180°)
     NONE = ''       # Нет поворота
+
+
+class ManipulatorCommand(Enum):
+    """Команды манипулятора."""
+    TAKE = 'T'      # Взять объект
+    PUT = 'P'       # Положить объект
+    GRAB = 'G'      # Схватить
+    RELEASE = 'R'   # Отпустить
+    UP = 'U'       # Поднять
+    DOWN = 'D'      # Опустить
+    NONE = ''       # Нет команды
 
 
 # =============================================================================
@@ -324,7 +369,7 @@ class RobotController:
         
         Args:
             commands: Список команд в строковом формате
-                      ('F', 'L', 'R', 'A', 'F2', 'F3', etc.)
+                      ('F', 'L', 'R', 'A', 'F2', 'F3', 'T', 'P', etc.)
         """
         self.command_queue = []
         for cmd_str in commands:
@@ -338,6 +383,9 @@ class RobotController:
                 self.command_queue.append(MotionCommand.forward(segments))
             elif cmd_str[0] in ('L', 'R', 'A'):
                 # Поворот
+                self.command_queue.append(MotionCommand(cmd_str[0]))
+            elif cmd_str[0] in ('T', 'P'):
+                # TAKE или PUT - операция с манипулятором
                 self.command_queue.append(MotionCommand(cmd_str[0]))
         
         self._log(f"Commands set: {[str(c.command_type) + str(c.segments) if c.segments > 1 else c.command_type for c in self.command_queue]}")
@@ -684,6 +732,259 @@ class RobotController:
             self.direction = self.direction.reverse()
     
     # =========================================================================
+    # УПРАВЛЕНИЕ МАНИПУЛЯТОРОМ
+    # =========================================================================
+    
+    def start_manip_take(self):
+        """
+        Начать операцию 'взять объект'.
+        
+        Последовательность:
+        1. ОСТАНОВКА (MANIP_STOPPING)
+        2. Установка манипулятора вниз, захват открыт (MANIP_SETUP)
+        3. Движение вперед к объекту (MANIP_MOVING_FORWARD)
+        4. Закрыть захват (MANIP_GRABBING)
+        5. Поднять объект (MANIP_LIFTING)
+        6. Движение назад (MANIP_MOVING_BACKWARD)
+        """
+        self._log("Starting MANIP_TAKE operation")
+        
+        # Запоминаем начальные тики
+        if self.last_encoder_data:
+            self.encoder_at_manip_start = EncoderData(
+                ticks=self.last_encoder_data.ticks.copy(),
+                timestamp=self._get_time_ms()
+            )
+        else:
+            self.encoder_at_manip_start = EncoderData(
+                ticks=[0, 0, 0, 0],
+                timestamp=self._get_time_ms()
+            )
+        
+        # Запоминаем начальное направление для возврата
+        self._manip_direction_before = self.direction
+        
+        # Этап 1: Остановка
+        self.set_state(RobotState.MANIP_STOPPING)
+        self.stop_motors()
+        self.set_servos_straight()
+        
+        # Запоминаем тип операции
+        self._current_manip_op = 'TAKE'
+    
+    def start_manip_put(self):
+        """
+        Начать операцию 'положить объект'.
+        
+        Последовательность:
+        1. ОСТАНОВКА (MANIP_STOPPING)
+        2. Установка манипулятора вниз, захват открыт (MANIP_SETUP)
+        3. Движение вперед к месту (MANIP_MOVING_FORWARD)
+        4. Открыть захват (MANIP_RELEASING)
+        5. Опустить манипулятор (MANIP_LOWERING)
+        6. Движение назад (MANIP_MOVING_BACKWARD)
+        """
+        self._log("Starting MANIP_PUT operation")
+        
+        # Запоминаем начальные тики
+        if self.last_encoder_data:
+            self.encoder_at_manip_start = EncoderData(
+                ticks=self.last_encoder_data.ticks.copy(),
+                timestamp=self._get_time_ms()
+            )
+        else:
+            self.encoder_at_manip_start = EncoderData(
+                ticks=[0, 0, 0, 0],
+                timestamp=self._get_time_ms()
+            )
+        
+        # Запоминаем начальное направление для возврата
+        self._manip_direction_before = self.direction
+        
+        # Этап 1: Остановка
+        self.set_state(RobotState.MANIP_STOPPING)
+        self.stop_motors()
+        self.set_servos_straight()
+        
+        # Запоминаем тип операции
+        self._current_manip_op = 'PUT'
+    
+    def _apply_calibrated_speeds(self, base_speed: int) -> Tuple[int, int]:
+        """
+        Применить калибровку моторов.
+        
+        Args:
+            base_speed: Базовая скорость для обоих моторов
+            
+        Returns:
+            Tuple[int, int]: (left_speed, right_speed) с учетом калибровки
+        """
+        left = int(base_speed * self.config.LEFT_MOTOR_CALIBRATION)
+        right = int(base_speed * self.config.RIGHT_MOTOR_CALIBRATION)
+        return left, right
+    
+    def update_manipulator(self) -> bool:
+        """
+        Обновить состояние операции манипулятора.
+        
+        Returns:
+            bool: True если операция продолжается, False если завершена
+        """
+        elapsed = self.get_state_duration_ms()
+        op_type = getattr(self, '_current_manip_op', 'TAKE')
+        
+        if self.state == RobotState.MANIP_STOPPING:
+            # Этап 1: Ожидание остановки
+            if elapsed >= self.config.CROSSROAD_STOP_TIME_MS:
+                self.set_state(RobotState.MANIP_SETUP)
+                # Устанавливаем манипулятор: рука вниз, захват открыт
+                self.servo_positions = [
+                    self.config.SERVO_STRAIGHT,  # Колеса прямо
+                    self.config.SERVO_STRAIGHT,
+                    self.config.SERVO_ARM_DOWN,   # Серво 2: рука вниз
+                    self.config.SERVO_GRIP_OPEN   # Серво 3: захват открыт
+                ]
+                self._log("Manipulator setup: arm DOWN, grip OPEN")
+        
+        elif self.state == RobotState.MANIP_SETUP:
+            # Этап 2: Ожидание установки манипулятора
+            if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
+                self.set_state(RobotState.MANIP_MOVING_FORWARD)
+                # Начинаем движение вперед с калибровкой
+                left, right = self._apply_calibrated_speeds(self.config.MANIPULATOR_MOVE_SPEED)
+                self.set_motor_speeds(left, right)
+                self._log(f"Moving forward: left={left}, right={right}")
+                # Сбрасываем таймер для отслеживания тиков
+                self.state_start_time = self._get_time_ms()
+        
+        elif self.state == RobotState.MANIP_MOVING_FORWARD:
+            # Этап 3: Движение вперед к объекту
+            if not self.last_encoder_data:
+                self._debug("Waiting for encoder data...")
+                return True
+            
+            start_ticks = self.encoder_at_manip_start.ticks
+            current_ticks = self.last_encoder_data.ticks
+            
+            # Среднее изменение тиков
+            delta_left = abs(current_ticks[0] - start_ticks[0])
+            delta_right = abs(current_ticks[2] - start_ticks[2])
+            avg_delta = (delta_left + delta_right) // 2
+            
+            self._debug(f"Move forward: avg_delta={avg_delta}, target={self.config.MANIPULATOR_MOVE_TICKS}")
+            
+            if avg_delta >= self.config.MANIPULATOR_MOVE_TICKS:
+                self.stop_motors()
+                
+                if op_type == 'TAKE':
+                    self.set_state(RobotState.MANIP_GRABBING)
+                    # Закрываем захват
+                    self.servo_positions = [
+                        self.config.SERVO_STRAIGHT,
+                        self.config.SERVO_STRAIGHT,
+                        self.config.SERVO_ARM_DOWN,
+                        self.config.SERVO_GRIP_CLOSED
+                    ]
+                    self._log("Grabbing: grip CLOSED")
+                else:  # PUT
+                    self.set_state(RobotState.MANIP_RELEASING)
+                    # Открываем захват (объект выпадает)
+                    self.servo_positions = [
+                        self.config.SERVO_STRAIGHT,
+                        self.config.SERVO_STRAIGHT,
+                        self.config.SERVO_ARM_DOWN,
+                        self.config.SERVO_GRIP_OPEN
+                    ]
+                    self._log("Releasing: grip OPEN")
+                
+                self.state_start_time = self._get_time_ms()
+        
+        elif self.state == RobotState.MANIP_GRABBING:
+            # Этап 4 (TAKE): Ожидание захвата
+            if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
+                self.set_state(RobotState.MANIP_LIFTING)
+                # Поднимаем объект
+                self.servo_positions = [
+                    self.config.SERVO_STRAIGHT,
+                    self.config.SERVO_STRAIGHT,
+                    self.config.SERVO_ARM_UP,    # Поднимаем
+                    self.config.SERVO_GRIP_CLOSED  # Держим
+                ]
+                self._log("Lifting: arm UP")
+                self.state_start_time = self._get_time_ms()
+        
+        elif self.state == RobotState.MANIP_LIFTING:
+            # Этап 5 (TAKE): Ожидание подъема
+            if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
+                self.set_state(RobotState.MANIP_MOVING_BACKWARD)
+                # Движение назад с калибровкой
+                left, right = self._apply_calibrated_speeds(self.config.MANIPULATOR_MOVE_SPEED)
+                self.set_motor_speeds(-left, -right)  # Назад
+                self._log(f"Moving backward: left={-left}, right={-right}")
+                self.state_start_time = self._get_time_ms()
+        
+        elif self.state == RobotState.MANIP_RELEASING:
+            # Этап 4 (PUT): Ожидание освобождения
+            if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
+                self.set_state(RobotState.MANIP_LOWERING)
+                # Опускаем манипулятор
+                self.servo_positions = [
+                    self.config.SERVO_STRAIGHT,
+                    self.config.SERVO_STRAIGHT,
+                    self.config.SERVO_ARM_DOWN,
+                    self.config.SERVO_GRIP_OPEN
+                ]
+                self._log("Lowering: arm DOWN")
+                self.state_start_time = self._get_time_ms()
+        
+        elif self.state == RobotState.MANIP_LOWERING:
+            # Этап 5 (PUT): Ожидание опускания
+            if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
+                self.set_state(RobotState.MANIP_MOVING_BACKWARD)
+                # Движение назад с калибровкой
+                left, right = self._apply_calibrated_speeds(self.config.MANIPULATOR_MOVE_SPEED)
+                self.set_motor_speeds(-left, -right)  # Назад
+                self._log(f"Moving backward: left={-left}, right={-right}")
+                self.state_start_time = self._get_time_ms()
+        
+        elif self.state == RobotState.MANIP_MOVING_BACKWARD:
+            # Этап 6: Движение назад
+            if not self.last_encoder_data:
+                self._debug("Waiting for encoder data...")
+                return True
+            
+            start_ticks = self.encoder_at_manip_start.ticks
+            current_ticks = self.last_encoder_data.ticks
+            
+            # Среднее изменение тиков
+            delta_left = abs(current_ticks[0] - start_ticks[0])
+            delta_right = abs(current_ticks[2] - start_ticks[2])
+            avg_delta = (delta_left + delta_right) // 2
+            
+            self._debug(f"Move backward: avg_delta={avg_delta}, target={self.config.MANIPULATOR_MOVE_TICKS}")
+            
+            if avg_delta >= self.config.MANIPULATOR_MOVE_TICKS:
+                self.stop_motors()
+                self.set_state(RobotState.MANIP_RETURNING)
+                # Возвращаем манипулятор в исходное положение
+                self.servo_positions = [
+                    self.config.SERVO_STRAIGHT,
+                    self.config.SERVO_STRAIGHT,
+                    self.config.SERVO_ARM_STRAIGHT,  # Рука прямо
+                    self.config.SERVO_GRIP_OPEN        # Захват открыт
+                ]
+                self._log("Manipulator returning to neutral")
+                self.state_start_time = self._get_time_ms()
+        
+        elif self.state == RobotState.MANIP_RETURNING:
+            # Этап 7: Возврат манипулятора
+            if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
+                self._log(f"Manipulator operation {op_type} COMPLETE!")
+                return False
+        
+        return True
+    
+    # =========================================================================
     # ГЛАВНЫЙ ЦИКЛ УПРАВЛЕНИЯ
     # =========================================================================
     
@@ -701,7 +1002,31 @@ class RobotController:
             self.set_state(RobotState.ERROR)
             return False
         
-        # Обработка состояний
+        # Обработка состояний манипулятора
+        if self.state in (
+            RobotState.MANIP_STOPPING,
+            RobotState.MANIP_SETUP,
+            RobotState.MANIP_MOVING_FORWARD,
+            RobotState.MANIP_GRABBING,
+            RobotState.MANIP_LIFTING,
+            RobotState.MANIP_MOVING_BACKWARD,
+            RobotState.MANIP_RELEASING,
+            RobotState.MANIP_LOWERING,
+            RobotState.MANIP_RETURNING
+        ):
+            # Операция манипулятора
+            if not self.update_manipulator():
+                # Операция завершена
+                self.pop_command()
+                
+                if self.has_commands():
+                    self.set_state(RobotState.WAITING)
+                else:
+                    self.set_state(RobotState.IDLE)
+            
+            return self.send_command()
+        
+        # Обработка состояний движения
         if self.state == RobotState.IDLE:
             # Проверяем, есть ли команды
             if self.has_commands():
@@ -713,6 +1038,12 @@ class RobotController:
                     # Поворот
                     turn_type = TurnType(cmd.command_type)
                     self.start_turn(turn_type)
+                elif cmd.command_type == 'T':
+                    # Взять объект
+                    self.start_manip_take()
+                elif cmd.command_type == 'P':
+                    # Положить объект
+                    self.start_manip_put()
         
         elif self.state in (RobotState.ACCELERATING, RobotState.CRUISING, RobotState.DECELERATING):
             # Движение вперед
@@ -761,6 +1092,10 @@ class RobotController:
                 elif cmd.command_type in ('L', 'R', 'A'):
                     turn_type = TurnType(cmd.command_type)
                     self.start_turn(turn_type)
+                elif cmd.command_type == 'T':
+                    self.start_manip_take()
+                elif cmd.command_type == 'P':
+                    self.start_manip_put()
         
         elif self.state == RobotState.STOPPED:
             # Остановлен, проверяем команды
