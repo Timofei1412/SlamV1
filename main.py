@@ -37,6 +37,7 @@ from typing import Tuple, Optional
 from esp_comms import ESPCommunication
 from graph_builder import BuildGraph
 from sector_analyzer import analyze_image
+from robot_control import RobotController, RobotConfig, Direction, TurnType
 from utils import constrain
 
 
@@ -45,23 +46,9 @@ from utils import constrain
 # =============================================================================
 
 class Config:
-    """Конфигурация системы"""
+    """Конфигурация системы. Использует RobotConfig для параметров движения."""
     # DEBUG режим
     DEBUG_MODE = DEBUG
-    
-    # Параметры движения
-    MAX_SPEED = 1000  # Максимальная скорость моторов
-    MIN_SPEED = 50     # Минимальная скорость
-    ACCEL_STEP = 100  # Шаг разгона/торможения
-    
-    # Ускорение (трапеция)
-    ACCEL_TIME_MS = 500      # Время разгона в мс
-    CRUISE_TIME_MS = 1000   # Время крейсерской скорости
-    DECEL_TIME_MS = 500     # Время торможения
-    
-    # Перекрестки
-    CROSSROAD_STOP_TIME_MS = 500  # Остановка на перекрестке для поворота
-    CROSSROAD_DETECT_THRESHOLD = 50  # Порог определения перекрестка (пиксели)
     
     # Исследование
     REQUIRED_GREEN_PIPES = 3
@@ -70,6 +57,20 @@ class Config:
     # Сетка
     GRID_ROWS = 4
     GRID_COLS = 4
+    
+    # Перекрестки - детекция
+    CROSSROAD_DETECT_THRESHOLD = 50  # Порог определения перекрестка (пиксели)
+    
+    # Параметры движения - делегируем в RobotConfig
+    MAX_SPEED = RobotConfig.MAX_MOTOR_SPEED
+    MIN_SPEED = RobotConfig.MIN_MOTOR_SPEED
+    ACCEL_TIME_MS = RobotConfig.ACCEL_TIME_MS
+    CRUISE_TIME_MS = RobotConfig.CRUISE_TIME_MS
+    DECEL_TIME_MS = RobotConfig.DECEL_TIME_MS
+    CROSSROAD_STOP_TIME_MS = RobotConfig.CROSSROAD_STOP_TIME_MS
+    
+    # Тики энкодера
+    TICK_PER_90_TURN = RobotConfig.TICK_PER_90_TURN
 
 
 # =============================================================================
@@ -113,123 +114,6 @@ def log_verbose(label, data):
         logging.debug(f"{label}: {data}")
 
 
-# =============================================================================
-# УПРАВЛЕНИЕ ДВИЖЕНИЕМ С ТРАПЕЦИЕВИДНЫМ УСКОРЕНИЕМ
-# =============================================================================
-
-class MotionController:
-    """
-    Контроллер движения с трапециевидным профилем скорости.
-    """
-    
-    def __init__(self, config: type):
-        self.config = config
-        self.current_speed = 0
-        self.target_speed = 0
-        self.is_moving = False
-        self.phase = 'idle'  # idle, accel, cruise, decel
-        self.phase_start_time = 0
-        self.is_stopping_for_turn = False
-        self.turn_stop_start = 0
-    
-    def start_motion(self, speed: int = None):
-        """Начать движение."""
-        if speed is None:
-            speed = self.config.MAX_SPEED
-        
-        self.target_speed = constrain(speed, self.config.MIN_SPEED, self.config.MAX_SPEED)
-        self.is_moving = True
-        self.phase = 'accel'
-        self.phase_start_time = time.time() * 1000
-        self.is_stopping_for_turn = False
-        
-        logging.info(f"Начало движения: скорость={self.target_speed}")
-        log_debug(f"MotionController: started motion, phase={self.phase}")
-    
-    def stop(self):
-        """Остановить движение."""
-        self.is_moving = False
-        self.target_speed = 0
-        self.phase = 'idle'
-        self.current_speed = 0
-        
-        logging.info("Остановка движения")
-        log_debug(f"MotionController: stopped, phase={self.phase}")
-    
-    def request_turn_stop(self):
-        """Запросить остановку для поворота."""
-        self.is_stopping_for_turn = True
-        self.turn_stop_start = time.time() * 1000
-        logging.info("Запрошена остановка для поворота")
-        log_debug("MotionController: turn stop requested")
-    
-    def update(self) -> Tuple[bool, int, int]:
-        """
-        Обновить состояние движения.
-        
-        Returns:
-            Tuple[bool, int, int]: (продолжать_движение, скорость_левых, скорость_правых)
-        """
-        if not self.is_moving:
-            return False, 0, 0
-        
-        current_time = time.time() * 1000
-        
-        # Проверяем остановку для поворота
-        if self.is_stopping_for_turn:
-            elapsed = current_time - self.turn_stop_start
-            if elapsed < self.config.CROSSROAD_STOP_TIME_MS:
-                self.current_speed = max(0, self.current_speed - self.config.ACCEL_STEP)
-                log_debug(f"MotionController: turning stop, elapsed={elapsed:.0f}ms, speed={self.current_speed}")
-                return True, self.current_speed, self.current_speed
-            else:
-                self.is_stopping_for_turn = False
-                self.current_speed = 0
-                log_debug("MotionController: turn stop complete")
-                return True, 0, 0
-        
-        # Обновляем фазу движения
-        phase_time = current_time - self.phase_start_time
-        
-        if self.phase == 'accel':
-            if phase_time >= self.config.ACCEL_TIME_MS:
-                self.phase = 'cruise'
-                self.phase_start_time = current_time
-                log_debug("MotionController: phase accel -> cruise")
-            else:
-                progress = phase_time / self.config.ACCEL_TIME_MS
-                self.current_speed = int(
-                    self.config.MIN_SPEED + 
-                    (self.target_speed - self.config.MIN_SPEED) * progress
-                )
-        
-        elif self.phase == 'cruise':
-            if phase_time >= self.config.CRUISE_TIME_MS:
-                self.phase = 'decel'
-                self.phase_start_time = current_time
-                log_debug("MotionController: phase cruise -> decel")
-            self.current_speed = self.target_speed
-        
-        elif self.phase == 'decel':
-            if phase_time >= self.config.DECEL_TIME_MS:
-                self.phase = 'idle'
-                self.current_speed = 0
-                self.is_moving = False
-                log_debug("MotionController: phase decel -> idle (complete)")
-            else:
-                progress = 1.0 - phase_time / self.config.DECEL_TIME_MS
-                self.current_speed = int(
-                    self.config.MIN_SPEED + 
-                    (self.target_speed - self.config.MIN_SPEED) * progress
-                )
-        
-        log_verbose("MotionController state", {
-            'phase': self.phase,
-            'speed': self.current_speed,
-            'is_moving': self.is_moving
-        })
-        
-        return self.is_moving, self.current_speed, self.current_speed
 
 
 # =============================================================================
@@ -412,7 +296,14 @@ class SLAMController:
             grid_rows=self.config.GRID_ROWS, 
             grid_cols=self.config.GRID_COLS
         )
-        self.motion = MotionController(self.config)
+        
+        # RobotController для управления роботом (новый модуль)
+        self.robot = RobotController(
+            self.esp,
+            config=RobotConfig,
+            debug=DEBUG
+        )
+        
         self.crossroad_detector = CrossroadDetector(
             threshold=self.config.CROSSROAD_DETECT_THRESHOLD
         )
@@ -425,6 +316,7 @@ class SLAMController:
         self.target_sector = None
         self.pending_commands = []
         self.motor_speeds = [0, 0, 0, 0]
+        self.servo_positions = [RobotConfig.SERVO_STRAIGHT] * 4
         self.cycle_count = 0
         
         # Инициализация видео
@@ -547,98 +439,67 @@ class SLAMController:
         return target
     
     def process_crossroad(self):
-        """Обработка перекрестка."""
+        """Обработка перекрестка - передаем команды RobotController."""
         if self.pending_commands:
-            cmd = self.pending_commands.pop(0)
+            # Преобразуем команды в формат RobotController
+            commands = self._convert_commands_for_robot(self.pending_commands)
+            self.robot.set_commands(commands)
+            self.pending_commands.clear()
             
-            logging.info(f"Crossroad: processing command '{cmd}'")
-            log_debug(f"Crossroad command: {cmd}, remaining: {self.pending_commands}")
-            
-            if cmd in ('R', 'L', 'A'):
-                self.motion.request_turn_stop()
-                self._execute_turn(cmd)
-                self._update_direction(cmd)
-            elif cmd.startswith('F'):
-                steps = int(cmd[1:]) if len(cmd) > 1 else 1
-                logging.info(f"Moving forward: {steps} segments")
-                log_debug(f"Forward command: {steps} steps")
-                if steps > 1:
-                    self.pending_commands.insert(0, f"F{steps-1}")
+            logging.info(f"Crossroad: commands sent to RobotController")
+            log_debug(f"RobotController commands: {commands}")
             
             self.is_on_crossroad = False
         else:
             self.select_next_target()
     
-    def _execute_turn(self, turn_cmd: str):
-        """Выполнить поворот."""
-        if turn_cmd == 'R':
-            self.motor_speeds = [
-                self.config.MAX_SPEED, self.config.MAX_SPEED,
-                -self.config.MAX_SPEED, -self.config.MAX_SPEED
-            ]
-        elif turn_cmd == 'L':
-            self.motor_speeds = [
-                -self.config.MAX_SPEED, -self.config.MAX_SPEED,
-                self.config.MAX_SPEED, self.config.MAX_SPEED
-            ]
-        elif turn_cmd == 'A':
-            self.motor_speeds = [
-                self.config.MAX_SPEED, self.config.MAX_SPEED,
-                -self.config.MAX_SPEED, -self.config.MAX_SPEED
-            ]
+    def _convert_commands_for_robot(self, commands: list) -> list:
+        """
+        Преобразовать команды в формат RobotController.
         
-        logging.info(f"Turn {turn_cmd}: speeds={self.motor_speeds}")
-        log_debug(f"Turn executed: {turn_cmd}")
-    
-    def _update_direction(self, turn_cmd: str):
-        """Обновить направление после поворота."""
-        dir_map = {'U': 0, 'R': 1, 'D': 2, 'L': 3}
-        inv_map = {0: 'U', 1: 'R', 2: 'D', 3: 'L'}
-        
-        old_direction = self.current_direction
-        current_idx = dir_map.get(self.current_direction, 0)
-        
-        if turn_cmd == 'R':
-            new_idx = (current_idx + 1) % 4
-        elif turn_cmd == 'L':
-            new_idx = (current_idx - 1) % 4
-        elif turn_cmd == 'A':
-            new_idx = (current_idx + 2) % 4
-        
-        self.current_direction = inv_map[new_idx]
-        logging.info(f"Direction updated: {old_direction} -> {self.current_direction}")
-        log_debug(f"Direction: {old_direction} -> {self.current_direction}")
+        Args:
+            commands: Список команд ['F', 'F2', 'R', 'L', 'A']
+            
+        Returns:
+            Список команд для RobotController
+        """
+        result = []
+        for cmd in commands:
+            cmd = cmd.strip().upper()
+            if not cmd:
+                continue
+            result.append(cmd)
+        return result
     
     def send_command_and_wait(self) -> bool:
         """
-        Отправить команду на ESP и дождаться ответа.
+        Обновить состояние робота через RobotController.
         
         Returns:
-            bool: True если ответ получен
+            bool: True если робот в рабочем состоянии
         """
-        speeds = self.motor_speeds
-        servos = [0, 0, 0, 0]
+        # Обновляем RobotController - он сам отправляет команды на ESP
+        success = self.robot.update()
         
-        logging.debug(f"Sending command: speeds={speeds}, servos={servos}")
-        log_debug(f"ESP TX: speeds={speeds}")
+        # Синхронизируем состояние с нашим контроллером
+        self.motor_speeds = self.robot.motor_speeds
+        self.servo_positions = self.robot.servo_positions
+        self.current_direction = self.robot.direction.value
         
-        success, response = self.esp.sendMotionCommand(speeds, servos)
+        log_debug(f"ESP TX: speeds={self.motor_speeds}, servos={self.servo_positions}")
         
-        if success:
-            logging.debug(f"ESP RX: mode={response.get('mode')}, values={response.get('values')}")
-            log_debug(f"ESP RX: {response}")
-        else:
-            logging.warning(f"ESP no response: speeds={speeds}")
-            log_debug("ESP: NO RESPONSE")
-        
-        # Проверяем статус соединения
-        if not self.esp.is_connected():
-            logging.error("=" * 40)
-            logging.error("ESP CONNECTION LOST!")
-            logging.error("=" * 40)
-            return False
+        # Проверяем, завершены ли все команды
+        if not self.robot.has_commands() and self.robot.state.name == 'IDLE':
+            if not self.is_on_crossroad:
+                self.is_on_crossroad = True
+                logging.info("Crossroad reached!")
+                # Анализируем текущий сектор
+                frame = self.capture_frame()
+                if frame is not None:
+                    self.analyze_current_sector(frame)
         
         return success
+    
     
     def main_loop(self):
         """Главный цикл системы."""
@@ -676,9 +537,8 @@ class SLAMController:
                         self.select_next_target()
                 else:
                     log_debug("State: MOVING")
-                    # В движении - обновляем motion controller
-                    is_moving, left, right = self.motion.update()
-                    self.motor_speeds = [left, left, right, right]
+                    # RobotController управляет движением автоматически
+                    pass
                 
                 # Определяем перекресток
                 is_crossroad, crossroad_debug = self.crossroad_detector.is_on_crossroad(frame)
@@ -735,18 +595,26 @@ class SLAMController:
         """Получить строку статуса."""
         status = self.graph.get_status()
         esp_stats = self.esp.get_stats()
+        robot_status = self.robot.get_status()
         
         lines = [
             f"=== SLAM Controller ===",
             f"Cycle: {self.cycle_count}",
             f"Position: {self.current_position}, Dir: {self.current_direction}",
             f"Target: {self.target_sector}",
-            f"Commands: {''.join(self.pending_commands[:15])}...",
-            f"Speeds: {self.motor_speeds}",
             f"On Crossroad: {self.is_on_crossroad}",
+            f"--- Robot Controller ---",
+            f"State: {robot_status['state']}",
+            f"Motors: {self.motor_speeds}",
+            f"Servos: {self.servo_positions}",
+            f"Commands: {self.robot.get_commands_string()[:15]}...",
+            f"Queue: {robot_status['commands_in_queue']}",
+            f"--- Exploration ---",
             f"Explored: {status['visited_sectors']}/{status['total_sectors']} ({status['exploration_percent']:.0f}%)",
             f"Pipes: G={status['green_pipes']}, B={status['blue_pipes']}, R={status['red_pipes']}",
-            f"ESP: sent={esp_stats['sent']}, recv={esp_stats['received']}, missed={esp_stats['missed']}",
+            f"--- ESP ---",
+            f"sent={esp_stats['sent']}, recv={esp_stats['received']}, missed={esp_stats['missed']}",
+            f"--- Status ---",
             f"Is Explored: {status['is_explored']}",
             f"DEBUG: {DEBUG}",
         ]
@@ -759,9 +627,11 @@ class SLAMController:
         logging.info("=== SHUTDOWN ===")
         logging.info("=" * 60)
         
-        # Останавливаем моторы
-        self.motor_speeds = [0, 0, 0, 0]
-        self.esp.sendMotionCommand(self.motor_speeds, [0, 0, 0, 0])
+        # Останавливаем робота через RobotController
+        self.robot.reset()
+        self.robot.stop_motors()
+        self.robot.set_servos_straight()
+        self.robot.send_command()
         
         # Закрываем соединение с ESP
         self.esp.close()
@@ -776,6 +646,7 @@ class SLAMController:
         # Финальный статус
         status = self.graph.get_status()
         esp_stats = self.esp.get_stats()
+        robot_status = self.robot.get_status()
         
         summary = f"""
 ================================================================
@@ -786,6 +657,13 @@ Green pipes found: {status['green_pipes']}
 Blue pipes found: {status['blue_pipes']}
 Red pipes found: {status['red_pipes']}
 Ramps found: {status['ramps']}
+
+Robot Control:
+  State: {robot_status['state']}
+  Direction: {robot_status['direction']}
+  Position: {robot_status['position']}
+  Commands executed: {robot_status['command_count']}
+  Errors: {robot_status['error_count']}
 
 ESP Communication:
   Commands sent: {esp_stats['sent']}
