@@ -42,11 +42,6 @@ class RobotConfig:
     MIN_MOTOR_SPEED = 100      # Минимальная скорость для движения
     STOP_SPEED = 0             # Скорость остановки
     
-    # Калибровка моторов (компенсация различий между моторами)
-    # Умножается на скорость левого мотора
-    LEFT_MOTOR_CALIBRATION = 1.0   # < 1.0 если левый быстрее
-    RIGHT_MOTOR_CALIBRATION = 1.0  # < 1.0 если правый быстрее
-    
     # --- Серво для колес ---
     SERVO_STRAIGHT_ANGLE = 32768  # Среднее положение (колеса ровно) ~90°
     SERVO_MIN = 0                 # Минимум
@@ -809,20 +804,6 @@ class RobotController:
         # Запоминаем тип операции
         self._current_manip_op = 'PUT'
     
-    def _apply_calibrated_speeds(self, base_speed: int) -> Tuple[int, int]:
-        """
-        Применить калибровку моторов.
-        
-        Args:
-            base_speed: Базовая скорость для обоих моторов
-            
-        Returns:
-            Tuple[int, int]: (left_speed, right_speed) с учетом калибровки
-        """
-        left = int(base_speed * self.config.LEFT_MOTOR_CALIBRATION)
-        right = int(base_speed * self.config.RIGHT_MOTOR_CALIBRATION)
-        return left, right
-    
     def update_manipulator(self) -> bool:
         """
         Обновить состояние операции манипулятора.
@@ -851,7 +832,8 @@ class RobotController:
             if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
                 self.set_state(RobotState.MANIP_MOVING_FORWARD)
                 # Начинаем движение вперед с калибровкой
-                left, right = self._apply_calibrated_speeds(self.config.MANIPULATOR_MOVE_SPEED)
+                left = self.config.MANIPULATOR_MOVE_SPEED
+                right = self.config.MANIPULATOR_MOVE_SPEED
                 self.set_motor_speeds(left, right)
                 self._log(f"Moving forward: left={left}, right={right}")
                 # Сбрасываем таймер для отслеживания тиков
@@ -918,7 +900,8 @@ class RobotController:
             if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
                 self.set_state(RobotState.MANIP_MOVING_BACKWARD)
                 # Движение назад с калибровкой
-                left, right = self._apply_calibrated_speeds(self.config.MANIPULATOR_MOVE_SPEED)
+                left = self.config.MANIPULATOR_MOVE_SPEED
+                right = self.config.MANIPULATOR_MOVE_SPEED
                 self.set_motor_speeds(-left, -right)  # Назад
                 self._log(f"Moving backward: left={-left}, right={-right}")
                 self.state_start_time = self._get_time_ms()
@@ -942,7 +925,8 @@ class RobotController:
             if elapsed >= self.config.MANIPULATOR_SERVO_TIME_MS:
                 self.set_state(RobotState.MANIP_MOVING_BACKWARD)
                 # Движение назад с калибровкой
-                left, right = self._apply_calibrated_speeds(self.config.MANIPULATOR_MOVE_SPEED)
+                left = self.config.MANIPULATOR_MOVE_SPEED
+                right = self.config.MANIPULATOR_MOVE_SPEED
                 self.set_motor_speeds(-left, -right)  # Назад
                 self._log(f"Moving backward: left={-left}, right={-right}")
                 self.state_start_time = self._get_time_ms()
