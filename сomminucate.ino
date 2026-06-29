@@ -4,11 +4,14 @@
 #define BAUD_RATE 115200
 
 #define TX_PACKET_SIZE 18  // M(1) + mode(1) + 4*int32(16)
-#define RX_PACKET_SIZE 17  // M(1) + 4*int16(8) + 4*uint16(8)
+#define RX_PACKET_SIZE 18  // M(1) + mode(1) + 4*int16(8) + 4*uint16(8)
+
+#define MOTOR_SPEED_LIMIT 100  // ±100
 
 #pragma pack(push, 1)
 struct RxPacket {
     uint8_t header;     // 'M'
+    uint8_t mode;
     int16_t speeds[4];
     uint16_t servos[4];
 };
@@ -20,7 +23,7 @@ struct TxPacket {
 };
 #pragma pack(pop)
 
-// Глобальные переменные состояния (должны быть объявлены extern в основном файле)
+// Глобальные переменные состояния
 uint8_t mode = 0;
 int16_t motorSpeeds[4] = {0};
 uint16_t servoPositions[4] = {0};
@@ -28,6 +31,8 @@ uint16_t servoPositions[4] = {0};
 static uint8_t rxBuffer[RX_PACKET_SIZE];
 static uint8_t rxIndex = 0;
 static bool rxSync = false;
+
+
 
 void setupComms() {
     RPI_SERIAL.begin(BAUD_RATE);
@@ -54,8 +59,19 @@ void readComms() {
 
         if (rxIndex >= RX_PACKET_SIZE) {
             RxPacket* pkt = (RxPacket*)rxBuffer;
-            memcpy(motorSpeeds, pkt->speeds, sizeof(pkt->speeds));
+            
+            // Обновляем состояние
+            mode = pkt->mode;
+            
+            // Ограничиваем скорости двигателей ±100
+            for (int i = 0; i < 4; i++) {
+                motorSpeeds[i] = map(pkt->speeds[i], 
+                                       (int16_t)-MOTOR_SPEED_LIMIT, 
+                                       (int16_t)MOTOR_SPEED_LIMIT);
+            }
+            
             memcpy(servoPositions, pkt->servos, sizeof(pkt->servos));
+            
             rxSync = false;
             rxIndex = 0;
         }

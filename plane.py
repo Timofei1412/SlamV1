@@ -28,6 +28,7 @@ from typing import Tuple, Optional, Union
 import numpy as np
 from PIL import Image, ImageOps
 
+
 try:
     import cv2
     HAS_CV2 = True
@@ -524,5 +525,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    debug_parameters("Images/New1.jpg", cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
-    
+    # debug_parameters("Images/New1.jpg", cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
+    run()

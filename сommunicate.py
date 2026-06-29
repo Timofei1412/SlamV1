@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 
 class ESPCommunication:
     # TX: 'M'(1) + 4*int16(8) + 4*uint16(8) = 17 байт
-    TX_STRUCT = struct.Struct('<B4h4H')
+    TX_STRUCT = struct.Struct('<Bi4h4H')
     # RX: 'M'(1) + uint8(1) + 4*int32(16) = 18 байт
     RX_STRUCT = struct.Struct('<Bi4i')
     RX_HEADER = b'M'
@@ -99,9 +99,10 @@ class ESPCommunication:
         with self._packet_lock:
             return self._last_packet.copy()
 
-    def sendMotionCommand(self, speeds: List[int], servos: List[int]):
+    def sendMotionCommand(self, mode: int,  speeds: List[int], servos: List[int]):
         """
         Отправка команды движения
+        :param mode int
         :param speeds: список из 4-х int16 (-32768..32767)
         :param servos: список из 4-х uint16 (0..65535)
         """
@@ -110,8 +111,8 @@ class ESPCommunication:
             return
 
         try:
-            packet = self.TX_STRUCT.pack(ord('M'), *speeds, *servos)
-            logging.info(f"TX -> Speeds:{speeds} Servos:{servos}")
+            packet = self.TX_STRUCT.pack(ord('M'),mode, *speeds, *servos)
+            logging.info(f"TX -> Mode: {mode}Speeds:{speeds} Servos:{servos}")
 
             if self.debug:
                 print(f"RPi -> ESP: {packet.hex()}")
