@@ -17,8 +17,7 @@ def main():
         )
 
     ESP = ESPCommunication(debug=False)
-    ESP.sendMode(3)
-    ESP.sendMotionCommand(10, -4)
+    ESP.sendMotionCommand([0, 0, 0, 0], [90, 90, 90, 90])
     ESP.close()
 
 if __name__ == "__main__":

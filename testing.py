@@ -17,12 +17,12 @@ REMAPPING_PARAMS = dict(
 ROI_PATH = 'Images/1.png'
 
 # Детекция
-MIN_LINE_LENGTH = 30
+MIN_LINE_LENGTH = 10
 MAX_LINE_GAP = 15
 ANGLE_TOLERANCE = 10 
 
 # Кластеризация и Сетка
-CLUSTER_RADIUS = 15         
+CLUSTER_RADIUS = 30         
 GRID_CLUSTER_EPS = 20.0     
 MIN_POINTS_PER_LINE = 3     
 

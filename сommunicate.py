@@ -130,14 +130,16 @@ class ESPCommunication:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    esp = ESPCommunication(debug=True)
-    try:
-        while True:
-            state = esp.get_last_packet()
-            if state['valid']:
-                age_ms = (time.time() - state['timestamp']) * 1000
-                print(f"Mode: {state['mode']} | Vals: {state['values']} | Age: {age_ms:.1f}ms")
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        esp.close()
+    # logging.basicConfig(level=logging.INFO)
+    esp = ESPCommunication()
+    time.sleep(3)
+    # esp.sendMotionCommand()
+    # try:
+    #     while True:
+    #         state = esp.get_last_packet()
+    #         if state['valid']:
+    #             age_ms = (time.time() - state['timestamp']) * 1000
+    #             print(f"Mode: {state['mode']} | Vals: {state['values']} | Age: {age_ms:.1f}ms")
+    #         time.sleep(0.1)
+    # except KeyboardInterrupt:
+    esp.close()
