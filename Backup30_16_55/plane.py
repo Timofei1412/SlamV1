@@ -48,9 +48,9 @@ except ImportError:
 
 
 DEFAULTS = {
-    "cx": 1203,
-    "cy": 457.0,
-    "outer_r": 412.0,
+    "cx": 304.8,
+    "cy": 232,
+    "outer_r": 215,
     "rotation_deg": -2.0,
     "top_size": 900,
     "field_scale": 0.70,
@@ -310,7 +310,8 @@ def save_cv_image(path: Path, image: np.ndarray, background_rgb: Tuple[int, int,
 # High-level API
 # ============================================================================
 def unwrap_image(
-        input_path: Union[str, Path],
+        input_path: Union[str, Path] = "1.jpg",
+        image = None,
         cx: float = DEFAULTS["cx"],
         cy: float = DEFAULTS["cy"],
         outer_r: float = DEFAULTS["outer_r"],
@@ -337,7 +338,11 @@ def unwrap_image(
     output_dir = Path(output_dir)
     interpolation = cv2.INTER_CUBIC if cubic else cv2.INTER_LINEAR
 
-    source = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
+    if image is not None:
+        source = image
+    else:
+        source = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
+    
     if source is None:
         raise RuntimeError(f"Cannot open input image: {input_path}")
     height, width = source.shape[:2]
@@ -350,7 +355,7 @@ def unwrap_image(
         lens_corrected = remap_frame(
             source, lens_map_x, lens_map_y, background, interpolation,
         )
-        lens_path = output_dir / f"{input_path.stem}_lens_corrected{input_path.suffix}"
+        lens_path = output_dir / f"1_lens_corrected.png"
         save_cv_image(lens_path, lens_corrected, background)
 
     combined_map_x, combined_map_y = build_combined_maps(
@@ -362,7 +367,7 @@ def unwrap_image(
         lens_deg=lens_deg, cone_power=cone_power,
     )
     top_view = remap_frame(source, combined_map_x, combined_map_y, background, interpolation)
-    output_path = output_dir / f"{input_path.stem}_unwrapped{input_path.suffix}"
+    output_path = output_dir / f"unwrapped.png"
     save_cv_image(output_path, top_view, background)
 
     return output_path
@@ -384,10 +389,10 @@ def debug_parameters(
     if not (HAS_MATPLOTLIB and HAS_CV2):
         raise RuntimeError("matplotlib and opencv are required for debug mode.")
     from matplotlib.widgets import Slider
-    if image == None:
-        src = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
-    else:
+    if image is not None:
         src = image
+    else:
+        src = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
     if src is None:
         raise RuntimeError(f"Cannot open: {input_path}")
     h, w = src.shape[:2]
@@ -440,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Convert a wide-angle conical-reflector image or video into a square top-down view.",
     )
-    parser.add_argument("-i", "--input", required=True, type=Path, help="Source image or video file")
+    parser.add_argument("-i", "--input", required=False, type=Path, help="Source image or video file")
     parser.add_argument("-o", "--output", required=True, type=Path, help="Output image or video file")
     parser.add_argument("--cx", type=float, default=DEFAULTS["cx"], help="Mirror center X")
     parser.add_argument("--cy", type=float, default=DEFAULTS["cy"], help="Mirror center Y")
@@ -461,8 +466,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if not args.input.exists():
-        raise ValueError("input file does not exist")
     if args.outer_r <= 0:
         raise ValueError("outer-r must be greater than zero")
     if args.top_size < 1:
@@ -496,35 +499,23 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError("unsupported lens-output image extension")
 
 
-def run(args: argparse.Namespace) -> None:
-    validate_args(args)
-    if is_video_path(args.input):
-        run_video(args)
-    else:
-        unwrap_image(
-            input_path=args.input,
-            cx=args.cx,
-            cy=args.cy,
-            outer_r=args.outer_r,
-            lens_deg=args.lens_deg,
-            cone_power=args.cone_power,
-            rotation_deg=args.rotation_deg,
-            top_size=args.top_size,
-            field_scale=args.field_scale,
-            output_dir=args.output.parent if args.output.parent != Path('.') else Path("Output"),
-            background=args.background,
-            chunk_rows=args.chunk_rows,
-            save_lens_corrected=args.lens_output is not None,
-            use_opencv=not args.numpy,
-            cubic=args.cubic,
-        )
+def run() -> None:
+    
+    if USE_PICAMERA:
+        picam2 = Picamera2()
+        picam2.configure(picam2.create_preview_configuration())
+        picam2.start()
+        img = picam2.capture_array()
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+    unwrap_image(
+        image = img,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
     try:
-        run(args)
+        run()
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -532,11 +523,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    img = None
-    if USE_PICAMERA:
-        picam2 = Picamera2()
-        picam2.configure(picam2.create_preview_configuration())
-        picam2.start()
-        img = picam2.capture_array()
-    debug_parameters("Images/New1.jpg",image=img, cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
-    # run()
+    # img = None
+    # if USE_PICAMERA:
+        # picam2 = Picamera2()
+        # picam2.configure(picam2.create_preview_configuration())
+        # picam2.start()
+        # img = picam2.capture_array()
+    # debug_parameters("Images/New1.jpg",image=img, cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
+    main()

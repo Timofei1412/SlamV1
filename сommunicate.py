@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 
 class ESPCommunication:
     # TX: 'M'(1) + 4*int16(8) + 4*uint16(8) = 17 байт
-    TX_STRUCT = struct.Struct('<Bi4h4H')
+    TX_STRUCT = struct.Struct('<BB4B4H')
     # RX: 'M'(1) + uint8(1) + 4*int32(16) = 18 байт
     RX_STRUCT = struct.Struct('<Bi4i')
     RX_HEADER = b'M'

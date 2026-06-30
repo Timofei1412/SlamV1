@@ -15,6 +15,7 @@ Usage as module:
 
     unwrap_image("input.jpg", cx=575, cy=457, outer_r=412)
     unwrap_image("input.jpg", cx=575, cy=457, outer_r=412, use_opencv=False)  # old path
+    unwrap_image(use_camera=True, cx=575, cy=457, outer_r=412)               # from PiCamera
     debug_parameters("input.jpg", cx=575, cy=457, outer_r=412)  # interactive tuning
 """
 
@@ -27,12 +28,6 @@ from pathlib import Path
 from typing import Tuple, Optional, Union
 import numpy as np
 from PIL import Image, ImageOps
-
-try:
-    from picamera2 import Picamera2
-    USE_PICAMERA = True
-except:
-    USE_PICAMERA = False
 
 try:
     import cv2
@@ -48,9 +43,9 @@ except ImportError:
 
 
 DEFAULTS = {
-    "cx": 1203,
-    "cy": 457.0,
-    "outer_r": 412.0,
+    "cx": 1240,
+    "cy": 949,
+    "outer_r": 840.0,
     "rotation_deg": -2.0,
     "top_size": 900,
     "field_scale": 0.70,
@@ -61,6 +56,19 @@ DEFAULTS = {
 JPEG_EXTENSIONS = {".jpg", ".jpeg", ".jpe"}
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tif", ".tiff", ".webp"}
+
+
+# ============================================================================
+# PiCamera helper (lazy initialization)
+# ============================================================================
+
+def _create_picam2():
+    """Lazily create and start a Picamera2 instance."""
+    from picamera2 import Picamera2
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_video_configuration())
+    picam2.start()
+    return picam2
 
 
 # ============================================================================
@@ -163,21 +171,17 @@ def lens_distorted_radius(ru_norm: np.ndarray, lens_deg: float) -> np.ndarray:
 
 
 # ============================================================================
-# Old numpy two-stage path (kept for debug/tune and optional use)
-# ============================================================================
-
-# ============================================================================
 # OpenCV remap maps
 # ============================================================================
 
 def build_lens_maps(
-        height: int,
-        width: int,
-        cx: float,
-        cy: float,
-        outer_r: float,
-        lens_deg: float,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    height: int,
+    width: int,
+    cx: float,
+    cy: float,
+    outer_r: float,
+    lens_deg: float,
+) -> tuple[np.ndarray, np.ndarray]:
     """Inverse map for the optional wide-angle corrected intermediate image."""
     x_coords = np.arange(width, dtype=np.float32)
     y_coords = np.arange(height, dtype=np.float32)
@@ -283,7 +287,7 @@ def build_combined_maps(
 
 
 # ============================================================================
-# PIL image I/O (kept for the old numpy path and save_image)
+# PIL image I/O (kept for save_image)
 # ============================================================================
 def save_image(image: Image.Image, path: Path, background: Tuple[int, int, int]) -> None:
     """Save RGBA images, compositing to RGB only for formats without alpha."""
@@ -310,7 +314,7 @@ def save_cv_image(path: Path, image: np.ndarray, background_rgb: Tuple[int, int,
 # High-level API
 # ============================================================================
 def unwrap_image(
-        input_path: Union[str, Path],
+        input_path: Optional[Union[str, Path]] = None,
         cx: float = DEFAULTS["cx"],
         cy: float = DEFAULTS["cy"],
         outer_r: float = DEFAULTS["outer_r"],
@@ -320,11 +324,14 @@ def unwrap_image(
         top_size: int = DEFAULTS["top_size"],
         field_scale: float = DEFAULTS["field_scale"],
         output_dir: Union[str, Path] = "Output",
+        output_name: str = "unwrapped",
         background: Tuple[int, int, int] = (0, 0, 0),
         chunk_rows: int = 128,
         save_lens_corrected: bool = False,
         use_opencv: bool = True,
         cubic: bool = False,
+        use_camera: bool = False,
+        picam2=None,
     ) -> Path:
     """
     Unwrap a conical mirror image to a top-down view.
@@ -332,14 +339,39 @@ def unwrap_image(
     By default uses the optimized one-pass OpenCV path (build_combined_maps +
     cv2.remap). Pass use_opencv=False to fall back to the old two-stage numpy
     path (correct_lens + unwrap_cone + sample_bilinear).
+
+    If use_camera=True, a frame is captured from the PiCamera (pass an existing
+    Picamera2 instance via `picam2`, or one will be created lazily). In this
+    mode `input_path` is only used to derive the output filename stem.
     """
-    input_path = Path(input_path)
+    input_path = Path(input_path) if input_path is not None else None
     output_dir = Path(output_dir)
     interpolation = cv2.INTER_CUBIC if cubic else cv2.INTER_LINEAR
 
-    source = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
-    if source is None:
-        raise RuntimeError(f"Cannot open input image: {input_path}")
+    # --- Source acquisition -------------------------------------------------
+    if use_camera:
+        if picam2 is None:
+            picam2 = _create_picam2()
+        frame = picam2.capture_array()
+        # Picamera2 default "main" stream is RGB; OpenCV expects BGR.
+        if frame.ndim == 3 and frame.shape[2] == 3:
+            source = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        else:
+            source = frame
+        stem = output_name if output_name else "camera"
+        suffix = ".jpg"
+    else:
+        if input_path is None:
+            raise ValueError("input_path is required when use_camera=False")
+        source = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
+        if source is None:
+            raise RuntimeError(f"Cannot open input image: {input_path}")
+        stem = input_path.stem
+        suffix = input_path.suffix
+
+    cv2.imshow("orig", source)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
     height, width = source.shape[:2]
 
     if save_lens_corrected:
@@ -350,7 +382,7 @@ def unwrap_image(
         lens_corrected = remap_frame(
             source, lens_map_x, lens_map_y, background, interpolation,
         )
-        lens_path = output_dir / f"{input_path.stem}_lens_corrected{input_path.suffix}"
+        lens_path = output_dir / f"{stem}_lens_corrected{suffix}"
         save_cv_image(lens_path, lens_corrected, background)
 
     combined_map_x, combined_map_y = build_combined_maps(
@@ -362,7 +394,7 @@ def unwrap_image(
         lens_deg=lens_deg, cone_power=cone_power,
     )
     top_view = remap_frame(source, combined_map_x, combined_map_y, background, interpolation)
-    output_path = output_dir / f"{input_path.stem}_unwrapped{input_path.suffix}"
+    output_path = output_dir / f"{stem}_unwrapped{suffix}"
     save_cv_image(output_path, top_view, background)
 
     return output_path
@@ -378,16 +410,14 @@ def debug_parameters(
         outer_r: float = DEFAULTS["outer_r"], lens_deg: float = DEFAULTS["lens_deg"],
         cone_power: float = DEFAULTS["cone_power"], rotation_deg: float = DEFAULTS["rotation_deg"],
         top_size: int = DEFAULTS["top_size"], field_scale: float = DEFAULTS["field_scale"],
-        background: Tuple[int, int, int] = (0, 0, 0), image = None,
+        background: Tuple[int, int, int] = (0, 0, 0),
     ) -> None:
     """Interactive parameter tuning via matplotlib sliders."""
     if not (HAS_MATPLOTLIB and HAS_CV2):
         raise RuntimeError("matplotlib and opencv are required for debug mode.")
     from matplotlib.widgets import Slider
-    if image == None:
-        src = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
-    else:
-        src = image
+
+    src = cv2.imread(str(input_path), cv2.IMREAD_UNCHANGED)
     if src is None:
         raise RuntimeError(f"Cannot open: {input_path}")
     h, w = src.shape[:2]
@@ -415,7 +445,7 @@ def debug_parameters(
         ("rotation_deg", -180, 180, 0.17), ("field_scale", 0.1, 2.0, 0.14),
         ("lens_deg", -90, 90, 0.11), ("cone_power", 0.1, 5.0, 0.08), ("top_size", 100, 2000, 0.05)
     ]
-    
+
     sliders = []
     for name, vmin, vmax, y in defs:
         ax_s = plt.axes([0.25, y, 0.60, 0.02])
@@ -440,8 +470,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Convert a wide-angle conical-reflector image or video into a square top-down view.",
     )
-    parser.add_argument("-i", "--input", required=True, type=Path, help="Source image or video file")
-    parser.add_argument("-o", "--output", required=True, type=Path, help="Output image or video file")
+    parser.add_argument("-i", "--input", required=False, type=Path, help="Source image or video file")
+    parser.add_argument("-o", "--output", required=False, type=Path, default=Path("Output/img.png"), help="Output image or video file")
+    parser.add_argument("--camera", action="store_true", help="Capture a single frame from PiCamera instead of reading --input")
     parser.add_argument("--cx", type=float, default=DEFAULTS["cx"], help="Mirror center X")
     parser.add_argument("--cy", type=float, default=DEFAULTS["cy"], help="Mirror center Y")
     parser.add_argument("--outer-r", type=float, default=DEFAULTS["outer_r"], help="Outer mirror radius")
@@ -461,8 +492,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    if not args.input.exists():
-        raise ValueError("input file does not exist")
+    # In camera mode --input is optional; otherwise it is required.
+    if not args.camera:
+        if args.input is None or not args.input.exists():
+            raise ValueError("input file does not exist")
     if args.outer_r <= 0:
         raise ValueError("outer-r must be greater than zero")
     if args.top_size < 1:
@@ -477,6 +510,17 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("video-codec must contain exactly 4 characters")
     if args.video_fps is not None and args.video_fps <= 0:
         raise ValueError("video-fps must be greater than zero")
+
+    if args.camera:
+        # Camera produces a single image; output must be an image path.
+        if is_video_path(args.output):
+            raise ValueError("in --camera mode, --output must be an image file")
+        if not is_image_path(args.output):
+            raise ValueError("unsupported output image extension")
+        if args.lens_output is not None:
+            if not is_image_path(args.lens_output):
+                raise ValueError("unsupported lens-output image extension")
+        return
 
     input_is_video = is_video_path(args.input)
     output_is_video = is_video_path(args.output)
@@ -498,25 +542,55 @@ def validate_args(args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     validate_args(args)
-    if is_video_path(args.input):
-        run_video(args)
+
+    if args.camera:
+        # Lazy camera init; reused only within this call.
+        picam2 = _create_picam2()
+        try:
+            unwrap_image(
+                input_path=args.input,          # may be None; used only for naming
+                cx=args.cx, cy=args.cy,
+                outer_r=args.outer_r,
+                lens_deg=args.lens_deg,
+                cone_power=args.cone_power,
+                rotation_deg=args.rotation_deg,
+                top_size=args.top_size,
+                field_scale=args.field_scale,
+                output_dir=args.output.parent,
+                output_name=args.output.stem,
+                background=args.background,
+                chunk_rows=args.chunk_rows,
+                save_lens_corrected=args.lens_output is not None,
+                use_opencv=not args.numpy,
+                cubic=args.cubic,
+                use_camera=True,
+                picam2=picam2,
+            )
+        finally:
+            try:
+                picam2.stop()
+                picam2.close()
+            except Exception:
+                pass
     else:
         unwrap_image(
             input_path=args.input,
-            cx=args.cx,
-            cy=args.cy,
+            cx=args.cx, cy=args.cy,
             outer_r=args.outer_r,
             lens_deg=args.lens_deg,
             cone_power=args.cone_power,
             rotation_deg=args.rotation_deg,
             top_size=args.top_size,
             field_scale=args.field_scale,
-            output_dir=args.output.parent if args.output.parent != Path('.') else Path("Output"),
+            output_dir=args.output.parent,
+            output_name=args.output.stem,
             background=args.background,
             chunk_rows=args.chunk_rows,
             save_lens_corrected=args.lens_output is not None,
             use_opencv=not args.numpy,
             cubic=args.cubic,
+            use_camera=False,
+            picam2=None,
         )
 
 
@@ -532,11 +606,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    img = None
-    if USE_PICAMERA:
-        picam2 = Picamera2()
-        picam2.configure(picam2.create_preview_configuration())
-        picam2.start()
-        img = picam2.capture_array()
-    debug_parameters("Images/New1.jpg",image=img, cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
-    # run()
+    # debug_parameters("a.jpg", cx=DEFAULTS["cx"], cy=DEFAULTS["cy"], outer_r=DEFAULTS["outer_r"])  # interactive tuning
+    main()
