@@ -45,19 +45,12 @@ void setupComms() {
 void readComms() {
     while (RPI_SERIAL.available() > 0) {
         uint8_t b = RPI_SERIAL.read();
-
-        if (!rxSync) {
-            if (b == 'M') {
-                rxBuffer[0] = b;
-                rxIndex = 1;
-                rxSync = true;
+        if (b == 'M') {
+            rxBuffer[0] = b;
+            for (rxBuffer = 1; rxBuffer < RX_PACKET_SIZE; rxBuffer += 1){
+                uint8_t b = RPI_SERIAL.read();
+                rxBuffer[rxIndex++] = b;
             }
-            continue;
-        }
-
-        rxBuffer[rxIndex++] = b;
-
-        if (rxIndex >= RX_PACKET_SIZE) {
             RxPacket* pkt = (RxPacket*)rxBuffer;
             
             // Обновляем состояние
@@ -65,14 +58,8 @@ void readComms() {
             
             // Ограничиваем скорости двигателей ±100
             for (int i = 0; i < 4; i++) {
-                motorSpeeds[i] = map(pkt->speeds[i], 
-                                       (int16_t)-MOTOR_SPEED_LIMIT, 
-                                       (int16_t)MOTOR_SPEED_LIMIT);
-            }
-            
-            memcpy(servoPositions, pkt->servos, sizeof(pkt->servos));
-            
-            rxSync = false;
+                motorSpeeds[i] = pkt->speeds[i] - 100;
+            }            
             rxIndex = 0;
         }
     }

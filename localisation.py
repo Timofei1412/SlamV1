@@ -10,6 +10,11 @@ import numpy as np
 import time
 from pathlib import Path
 import sys
+try:
+    from picamera2 import Picamera2
+    USE_PICAMERA = True
+except:
+    USE_PICAMERA = False
 
 sys.path.append(str(Path(__file__).parent))
 from plane import (build_combined_maps, remap_frame, DEFAULTS)
@@ -384,30 +389,33 @@ class ConicalLocalization:
 
 
 def main():
-    """Main localization loop using video input."""
+    """Main localization loop using camera or video input."""
     locator = ConicalLocalization(
-        cx=308,
-        cy=234,
-        outer_r=230,
-        lens_deg=-83.0,
-        cone_power=2.1,
         rotation_deg=0.0,
         top_size=400,
         field_scale=0.70,
         roi="Images/1.png",
         debug_mode=True,
         background=(0, 0, 0),
-        interpolation=cv2.INTER_LINEAR,
-        # New filtering parameters
-        roi_margin=10,      # Points within 10px of ROI boundary are filtered
-        edge_margin=30,     # Points within 15px of image edges are filtered
-        min_features=7,    # Re-detect when features drop below 10
+        
+        roi_margin=10,
+        edge_margin=30,
+        min_features=7,
     )
     
-    cap = cv2.VideoCapture("Images/vid2.mp4")
-    if not cap.isOpened():
-        print("Error: Cannot open video file")
-        return
+    # Initialize camera or video source
+    if USE_PICAMERA:
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(main={"size": (640, 480)})
+        picam2.configure(config)
+        picam2.start()
+        print("Camera initialized")
+    else:
+        cap = cv2.VideoCapture("Images/vid2.mp4")
+        if not cap.isOpened():
+            print("Error: Cannot open video file")
+            return
+        print("Video file loaded")
     
     print("\nVisualization legend:")
     print("  RED overlay = active ROI area")
@@ -417,26 +425,42 @@ def main():
     
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("End of video reached")
-                break
+            # Capture frame
+            if USE_PICAMERA:
+                frame = picam2.capture_array()
+                # picamera2 returns RGB, convert to BGR for OpenCV
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:
+                ret, frame = cap.read()
+                if not ret:
+                    print("End of video reached")
+                    break
+            
+            # Process frame
             unwrapped = locator.unwrap_frame(frame)
             total_x, total_y, rotation_deg, frame_with_tracks = locator.track_displacement(unwrapped)
+            
             current_time = time.time()
             locator.maybe_update_features(current_time)
             locator.frame_count += 1
+            
+            # Display results
             cv2.imshow('Unwrapped View (with ROI debug)', frame_with_tracks)
             cv2.imshow('Original Frame', frame)
+            
             if cv2.waitKey(30) == 27:
                 break
+                
     finally:
-        cap.release()
+        if USE_PICAMERA:
+            picam2.stop()
+            picam2.close()
+        else:
+            cap.release()
         cv2.destroyAllWindows()
         print(f"\nTotal frames processed: {locator.frame_count}")
         print(f"Final position: X={locator.total_x:.2f}, Y={locator.total_y:.2f}")
         print(f"Final rotation: {np.degrees(locator.total_rotation):.2f} degrees")
-
 
 if __name__ == "__main__":
     main()

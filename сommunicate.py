@@ -4,33 +4,27 @@ import logging
 import threading
 import time
 from typing import List, Optional, Dict, Any
-
+from datetime import datetime
 
 class ESPCommunication:
     # TX: 'M'(1) + 4*int16(8) + 4*uint16(8) = 17 байт
-    TX_STRUCT = struct.Struct('<BB4B4H')
+    TX_STRUCT = struct.Struct('<BB4b4b')
     # RX: 'M'(1) + uint8(1) + 4*int32(16) = 18 байт
     RX_STRUCT = struct.Struct('<Bi4i')
     RX_HEADER = b'M'
-    RX_PACKET_SIZE = 18
+    RX_PACKET_SIZE = 15
 
-    def __init__(self, port: str = '/dev/serial0', baud: int = 115200, debug: bool = False):
+    def __init__(self, port: str = '/dev/ttyAMA0', baud: int = 115200, debug: bool = False):
         self.debug = debug
         self.port = port
         self.baud = baud
 
         self.virtualConnection = False
         self.ser: Optional[serial.Serial] = None
+        
         self.running = True
-        self._rx_buffer = bytearray()
-
         # Хранилище последнего пакета
-        self._last_packet: Dict[str, Any] = {
-            'mode': 0,
-            'values': [0, 0, 0, 0],
-            'timestamp': 0.0,
-            'valid': False
-        }
+        self._last_packet = [0]
         self._packet_lock = threading.Lock()
 
         try:
@@ -42,57 +36,33 @@ class ESPCommunication:
             logging.error(f"Serial init failed: {e}. Virtual mode.")
             self.virtualConnection = True
 
-        self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self.read_thread = threading.Thread(target=self._read_loop)
         self.read_thread.start()
 
     def _read_loop(self):
         """Неблокирующий цикл чтения с точной сборкой пакетов"""
         while self.running:
             if self.virtualConnection or not self.ser:
-                continue
+                return
 
             try:
-                waiting = self.ser.in_waiting
-                if waiting > 0:
-                    data = self.ser.read(waiting)
-                    self._rx_buffer.extend(data)
+                if self.ser.in_waiting > 7:
+                    data = self.ser.read()
+                    # logging.warning("started")
+                    if data == b"M":
+                        telem = []
+                        data = self.ser.read()
 
-                    while len(self._rx_buffer) >= self.RX_PACKET_SIZE:
-                        idx = self._rx_buffer.find(self.RX_HEADER)
-                        if idx == -1:
-                            self._rx_buffer.clear()
-                            break
-
-                        if idx > 0:
-                            logging.warning(f"Discarding {idx} garbage bytes")
-                            del self._rx_buffer[:idx]
-
-                        if len(self._rx_buffer) < self.RX_PACKET_SIZE:
-                            break
-
-                        packet_bytes = bytes(self._rx_buffer[:self.RX_PACKET_SIZE])
-                        del self._rx_buffer[:self.RX_PACKET_SIZE]
-                        self._handle_rx_packet(packet_bytes)
-
+                        while(data != b"M"):
+                            # logging.info(int(data.hex(), 16))
+                            telem.append(int(data.hex(), 16))
+                            data = self.ser.read()
+                        self._last_packet = telem
+                        # logging.exception(telem)
             except Exception as e:
                 logging.error(f"RX Loop Error: {e}")
 
-    def _handle_rx_packet(self, raw: bytes):
-        """Парсинг и сохранение последнего пакета"""
-        try:
-            _, mode, v1, v2, v3, v4 = self.RX_STRUCT.unpack(raw)
 
-            with self._packet_lock:
-                self._last_packet['mode'] = mode
-                self._last_packet['values'] = [v1, v2, v3, v4]
-                self._last_packet['timestamp'] = time.time()
-                self._last_packet['valid'] = True
-
-            logging.info(f"RX <- Mode:{mode} Data:[{v1}, {v2}, {v3}, {v4}]")
-            if self.debug:
-                print(f"ESP <- M{mode} | {v1} {v2} {v3} {v4}")
-        except struct.error as e:
-            logging.error(f"Unpack error: {e} | Raw: {raw.hex()}")
 
     def get_last_packet(self) -> Dict[str, Any]:
         """Мгновенное получение копии последнего валидного пакета от ESP"""
@@ -103,19 +73,26 @@ class ESPCommunication:
         """
         Отправка команды движения
         :param mode int
-        :param speeds: список из 4-х int16 (-32768..32767)
-        :param servos: список из 4-х uint16 (0..65535)
+        :param speeds: список из 4-х int8 (-32768..32767)
+        :param servos: список из 4-х uint8 (0..65535)
         """
         if len(speeds) != 4 or len(servos) != 4:
             logging.error("Speeds and Servos must have exactly 4 elements each")
             return
-
+        
         try:
-            packet = self.TX_STRUCT.pack(ord('M'),mode, *speeds, *servos)
-            logging.info(f"TX -> Mode: {mode}Speeds:{speeds} Servos:{servos}")
+            # packet = self.TX_STRUCT.pack(ord('M'), mode, *speeds, *servos)
+            data = [ord("M"), mode]
+            for i in speeds:
+                data.append(i + 100)
+            for i in servos:
+                data.append(i)
+
+            packet = bytes(data)
+            logging.info(f"TX -> Mode: {mode} Speeds:{speeds} Servos:{servos}")
 
             if self.debug:
-                print(f"RPi -> ESP: {packet.hex()}")
+                print(f"RPi -> ESP: {packet.hex(bytes_per_sep=2)}")
 
             if not self.virtualConnection and self.ser:
                 self.ser.write(packet)
@@ -132,15 +109,32 @@ class ESPCommunication:
 
 if __name__ == "__main__":
     # logging.basicConfig(level=logging.INFO)
+    timestamp = datetime.now().strftime('%d_%H-%M-%S')
+    log_file = f'Output/Logs/app_{timestamp}.log'
+
+    logging.basicConfig(
+        filename=log_file,
+        filemode="w",
+        # datefmt='%H:%M:%S.%f',
+        format='%(asctime)s | %(levelname)-8s | %(filename)s | %(message)s',
+        level=logging.INFO,
+        encoding='utf-8',
+        # backupCount=3,
+        )
     esp = ESPCommunication()
-    time.sleep(3)
-    # esp.sendMotionCommand()
-    # try:
-    #     while True:
-    #         state = esp.get_last_packet()
-    #         if state['valid']:
-    #             age_ms = (time.time() - state['timestamp']) * 1000
-    #             print(f"Mode: {state['mode']} | Vals: {state['values']} | Age: {age_ms:.1f}ms")
-    #         time.sleep(0.1)
-    # except KeyboardInterrupt:
+    a = time.time()
+    while esp.get_last_packet() != [1]:
+        esp.sendMotionCommand(0, [0, 0, 0, 0], [0, 0, 0, 0])
+        print((time.time() - a)*1000)
+        a = time.time()
+        # time.sleep(.1)
+    for i in range(100):
+        esp.sendMotionCommand(0, [10, 0, 0, 0], [0, 0, 0, 0])
+        time.sleep(.1)
+    esp.sendMotionCommand(0, [0, 0, 0, 0], [0, 0, 0, 0])
+    # print(esp.get_last_packet())
     esp.close()
+
+
+# 4d000000000500000000000000000000000000000000000000000000000000000000000000
+# 4d00|0005|0000|0000|0000|0000|0000|0000|0000|00
